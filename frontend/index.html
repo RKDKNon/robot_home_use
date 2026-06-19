@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS — AI Health Assistant</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- Status dot (top-right corner) -->
+        <div class="ws-status" id="ws-status">
+            <div class="status-dot"></div>
+            <span class="status-text">CONNECTING...</span>
+        </div>
+
+        <!-- Test Speaker — top-left corner -->
+        <button class="test-audio-btn" id="test-audio-btn" title="ทดสอบลำโพง">
+            <div class="test-icon">🔊</div>
+        </button>
+
+        <!-- Main Face Area -->
+        <main class="main-display">
+
+            <!-- Robot Face Stage (tap to talk) -->
+            <div class="face-stage" id="face-stage">
+
+                <!-- Ambient glow rings around face -->
+                <div class="ambient-ring ring-1"></div>
+                <div class="ambient-ring ring-2"></div>
+                <div class="ambient-ring ring-3"></div>
+
+                <!-- Countdown arc overlay on face -->
+                <div class="ptt-countdown-arc face-countdown-arc" id="ptt-countdown-arc"></div>
+
+                <!-- Robot Head with Eyes -->
+                <div class="robot-head">
+
+                    <!-- State Badge -->
+                    <div class="robot-state-badge" id="state-badge">STANDBY</div>
+
+                    <!-- Eyes Container -->
+                    <div class="robot-eyes-row">
+
+                        <!-- LEFT EYE -->
+                        <div class="eye-wrap" id="eye-left">
+                            <div class="eye-outer-glow"></div>
+                            <div class="eye-socket">
+                                <div class="eye-white">
+                                    <div class="iris" id="iris-left">
+                                        <div class="iris-inner"></div>
+                                        <div class="pupil">
+                                            <div class="pupil-highlight"></div>
+                                            <div class="pupil-highlight-sm"></div>
+                                        </div>
+                                    </div>
+                                    <!-- Shine overlay -->
+                                    <div class="eye-shine"></div>
+                                </div>
+                                <!-- Eyelids -->
+                                <div class="eyelid eyelid-top" id="eyelid-top-left"></div>
+                                <div class="eyelid eyelid-bottom" id="eyelid-bot-left"></div>
+                            </div>
+                        </div>
+
+                        <!-- RIGHT EYE -->
+                        <div class="eye-wrap" id="eye-right">
+                            <div class="eye-outer-glow"></div>
+                            <div class="eye-socket">
+                                <div class="eye-white">
+                                    <div class="iris" id="iris-right">
+                                        <div class="iris-inner"></div>
+                                        <div class="pupil">
+                                            <div class="pupil-highlight"></div>
+                                            <div class="pupil-highlight-sm"></div>
+                                        </div>
+                                    </div>
+                                    <div class="eye-shine"></div>
+                                </div>
+                                <div class="eyelid eyelid-top" id="eyelid-top-right"></div>
+                                <div class="eyelid eyelid-bottom" id="eyelid-bot-right"></div>
+                            </div>
+                        </div>
+
+                    </div><!-- /robot-eyes-row -->
+
+                    <!-- Robot Name -->
+                    <div class="robot-name-plate">
+                        <span class="robot-name">JARVIS</span>
+                        <span class="robot-subtitle">AI Health Assistant</span>
+                    </div>
+
+                </div><!-- /robot-head -->
+
+                <!-- Listening wave bars (shown when LISTENING) -->
+                <div class="listen-bars" id="listen-bars">
+                    <span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span><span></span>
+                </div>
+
+                <!-- Tap hint (shown only in idle) -->
+                <div class="face-tap-hint" id="face-tap-hint">แตะเพื่อพูดคุย</div>
+
+            </div><!-- /face-stage -->
+
+            <!-- Floating Speech Bubble -->
+            <div class="speech-bubble" id="speech-bubble">
+                <p id="bubble-text"></p>
+            </div>
+
+            <!-- Status Indicator -->
+            <div class="status-indicator" id="status-indicator">
+                <span class="mic-indicator" id="mic-indicator">🎙️</span>
+                <div class="status-dots" id="status-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <span class="status-hint" id="status-hint">READY</span>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Telemedicine Overlay -->
+    <div class="telemedicine-overlay" id="telemed-overlay">
+        <div class="telemed-modal">
+            <div class="telemed-header">
+                <h2>🩺 Socare Telemedicine</h2>
+                <p>กำลังเชื่อมต่อวิดีโอคอลกับแพทย์ประจำตัว...</p>
+            </div>
+            <div class="video-grid">
+                <div class="video-box patient-view">
+                    <div class="video-label">กล้องผู้ป่วย</div>
+                    <div class="mock-avatar">👴 Patient</div>
+                </div>
+                <div class="video-box doctor-view">
+                    <div class="video-label">แพทย์ผู้ให้บริการ</div>
+                    <div class="mock-avatar doctor-calling">👩‍⚕️ Doctor (Connecting)</div>
+                    <div class="connection-spinner"></div>
+                </div>
+            </div>
+            <div class="telemed-footer">
+                <button class="btn btn-danger" id="end-telemed-btn">วางสาย / ปิดการเชื่อมต่อ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reminder Alert Modal -->
+    <div class="alert-overlay" id="reminder-alert-overlay">
+        <div class="alert-modal">
+            <div class="alert-icon">🔔</div>
+            <h2 id="reminder-alert-title">ถึงเวลาทานยาแล้ว!</h2>
+            <p id="reminder-alert-body">ข้อมูลรายละเอียดการทานยา</p>
+            <div class="alert-actions">
+                <button class="btn btn-success" id="ack-reminder-btn">รับทราบและทานยาแล้ว ✓</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

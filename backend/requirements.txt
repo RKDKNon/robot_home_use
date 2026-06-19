@@ -1,0 +1,7 @@
+google-genai
+websockets
+python-dotenv
+numpy
+sounddevice
+soundfile
+vosk

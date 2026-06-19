@@ -1,0 +1,427 @@
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime
+import websockets
+from dotenv import load_dotenv
+import numpy as np
+
+# Add current dir to path to import helpers
+sys.path.append(os.path.dirname(__file__))
+
+import db_manager
+from audio_handler import AudioHandler
+from gemini_client import GeminiClient
+from wake_word import WakeWordDetector
+
+load_dotenv()
+
+PORT = int(os.getenv("PORT", 8765))
+
+class StateManager:
+    def __init__(self):
+        self.state = "idle"  # idle, listening, thinking, speaking
+        self.connected_clients = set()
+        
+        # Initialize sub-modules
+        db_manager.init_db()
+        self.audio_handler = AudioHandler()
+        self.gemini_client = GeminiClient(self.audio_handler, self)
+        self.wake_word = WakeWordDetector(self)  # Wake word "Jarvis" detector
+        
+        # Wire callback for playback changes (speaking -> idle / idle -> speaking)
+        self.audio_handler.on_playback_state_change = self._handle_playback_state_change
+        
+        # Audio handler by default starts with muted mic (for PTT control)
+        self.audio_handler.muted = True
+        
+        # Track last reminder trigger time to prevent duplicate triggers in the same minute
+        self.last_reminder_minute = ""
+
+    async def register_client(self, websocket):
+        """Registers a new WebSocket frontend client and sends current state."""
+        self.connected_clients.add(websocket)
+        print(f"🖥️ Frontend Client connected. Total: {len(self.connected_clients)}")
+        
+        # Reset state on new connection to prevent lingering listening/speaking state
+        await self.update_state("idle")
+        self.audio_handler.muted = True
+        self.audio_handler.clear_playback()
+        
+        # Send initial state and vitals
+        await websocket.send(json.dumps({
+            "type": "state_change",
+            "state": self.state
+        }))
+        await self.send_latest_vitals_to_ui(websocket)
+
+    async def unregister_client(self, websocket):
+        """Unregisters a frontend client."""
+        self.connected_clients.remove(websocket)
+        print(f"🖥️ Frontend Client disconnected. Total: {len(self.connected_clients)}")
+
+    async def broadcast_to_frontend(self, message: dict):
+        """Broadcasts a JSON message to all connected frontends."""
+        if not self.connected_clients:
+            return
+        payload = json.dumps(message)
+        # Gather all sends
+        await asyncio.gather(*[client.send(payload) for client in self.connected_clients], return_exceptions=True)
+
+    async def update_state(self, new_state: str):
+        """Updates the system state and broadcasts it to the frontend."""
+        if self.state != new_state:
+            self.state = new_state
+            print(f"🤖 State updated: {new_state.upper()}")
+            await self.broadcast_to_frontend({
+                "type": "state_change",
+                "state": new_state
+            })
+
+    async def send_latest_vitals_to_ui(self, websocket=None):
+        """Fetches latest vitals from DB and updates UI."""
+        vitals = db_manager.get_latest_vitals(5)
+        msg = {
+            "type": "vitals_update",
+            "vitals": vitals
+        }
+        if websocket:
+            await websocket.send(json.dumps(msg))
+        else:
+            await self.broadcast_to_frontend(msg)
+
+    async def execute_tool(self, name: str, args: dict) -> dict:
+        """Executes function calls requested by the Gemini Live API."""
+        try:
+            if name == "set_emotion":
+                emotion = args.get("emotion", "neutral")
+                intensity = args.get("intensity", 1.0)
+                await self.broadcast_to_frontend({
+                    "type": "emotion_change",
+                    "emotion": emotion,
+                    "intensity": intensity
+                })
+                return {"status": "success", "message": f"Emotion set to {emotion} (intensity {intensity})"}
+                
+            elif name == "show_content":
+                card_type = args.get("type")
+                title = args.get("title")
+                body = args.get("body", "")
+                payload = args.get("payload", "")
+                await self.broadcast_to_frontend({
+                    "type": "show_card",
+                    "card_type": card_type,
+                    "title": title,
+                    "body": body,
+                    "payload": payload
+                })
+                return {"status": "success", "message": f"Card '{title}' of type {card_type} shown on display"}
+                
+            elif name == "set_reminder":
+                time = args.get("time")
+                medicine_name = args.get("medicine_name")
+                dosage = args.get("dosage", "1 tab")
+                repeat = args.get("repeat", "daily")
+                
+                rid = db_manager.add_reminder(time, medicine_name, dosage, repeat)
+                
+                # Also display it visually as a card
+                await self.broadcast_to_frontend({
+                    "type": "show_card",
+                    "card_type": "reminder",
+                    "title": "เพิ่มการแจ้งเตือนกินยา",
+                    "body": f"ตั้งเตือนกินยา: {medicine_name}\nขนาด: {dosage}\nเวลา: {time} น."
+                })
+                return {"status": "success", "reminder_id": rid, "message": "Reminder saved successfully"}
+                
+            elif name == "get_vitals":
+                limit = args.get("limit", 3)
+                vitals = db_manager.get_latest_vitals(limit)
+                return {"status": "success", "vitals": vitals}
+                
+            elif name == "trigger_telemedicine":
+                reason = args.get("reason", "Patient requested escalation")
+                await self.broadcast_to_frontend({
+                    "type": "telemedicine_trigger",
+                    "reason": reason
+                })
+                return {"status": "escalating", "message": f"Connecting to Socare doctor. Reason: {reason}"}
+                
+            else:
+                return {"error": "unknown_tool", "message": f"Tool {name} is not implemented"}
+        except Exception as e:
+            print(f"Error executing tool {name}: {e}")
+            return {"error": "execution_failed", "message": str(e)}
+
+    # --- PTT WebSocket Commands ---
+
+    async def handle_ptt_press(self):
+        """Open microphone and signal ActivityStart to Gemini."""
+        print("🎤 PTT: เปิดไมค์ + ActivityStart")
+        
+        # Interrupt any ongoing playback (barge-in)
+        self.audio_handler.clear_playback()
+        
+        # Connect to Gemini if not already connected
+        if not self.gemini_client.is_connected:
+            await self.gemini_client.connect()
+            for _ in range(30):
+                if self.gemini_client.is_connected:
+                    break
+                await asyncio.sleep(0.2)
+
+        if not self.gemini_client.is_connected:
+            print("⚠️  Gemini not connected — cannot open mic")
+            return
+            
+        # Signal turn start to Gemini
+        await self.gemini_client.send_activity_start()
+        
+        # Unmute mic → audio starts flowing to Gemini
+        self.audio_handler.muted = False
+        await self.update_state("listening")
+
+
+    def _handle_playback_state_change(self, is_playing: bool):
+        """Called by AudioHandler when playback starts or stops."""
+        if is_playing:
+            # Mute mic while Jarvis is speaking (prevent echo)
+            self.audio_handler.muted = True
+            asyncio.create_task(self.update_state("speaking"))
+        else:
+            # Jarvis finished → open mic so patient can respond immediately
+            if self.state == "speaking":
+                asyncio.create_task(self.update_state("idle"))
+                asyncio.create_task(self._auto_listen_after_speaking())
+
+    async def _auto_listen_after_speaking(self):
+        """After Jarvis finishes speaking, open mic and use amplitude VAD.
+
+        Timeline:
+          patient speaks → silence 1.5s → mute mic → THINKING → Gemini responds → SPEAKING
+          no speech 8s                 → mute mic → IDLE
+          fallback max 30s             → mute mic → THINKING
+        """
+        await asyncio.sleep(0.6)
+        if self.state != "idle":
+            return
+        if not self.gemini_client.is_connected:
+            return
+
+        SPEECH_THRESHOLD     = 250    # amplitude above = speech detected
+        SILENCE_AFTER_SPEECH = 1.5    # seconds of silence to release (patient done)
+        NO_SPEECH_TIMEOUT    = 8.0    # give up if nobody speaks at all
+        MAX_LISTEN           = 30     # absolute max (fallback)
+        TICK                 = 0.25   # VAD poll rate
+
+        print("👂 Auto-listen: เปิดไมค์ — amplitude VAD เฝ้าระวัง")
+
+        self.audio_handler.muted = False
+        await self.update_state("listening")
+        await self.broadcast_to_frontend({
+            "type": "transcript",
+            "text": "🎙️ รอฟัง... พูดได้เลยครับ"
+        })
+
+        speech_detected = False
+        silence_start   = None
+        no_speech_start = asyncio.get_event_loop().time()
+        last_countdown  = MAX_LISTEN + 1
+        elapsed         = 0.0
+
+        while elapsed < MAX_LISTEN:
+            await asyncio.sleep(TICK)
+            elapsed += TICK
+
+            if self.state != "listening":
+                return  # Gemini responded / manually interrupted
+
+            amp = self.audio_handler.last_amplitude
+            now = asyncio.get_event_loop().time()
+
+            if amp > SPEECH_THRESHOLD:
+                # Patient is speaking
+                speech_detected = True
+                silence_start   = None
+            else:
+                if silence_start is None:
+                    silence_start = now
+                silent_for = now - silence_start
+
+                if speech_detected and silent_for >= SILENCE_AFTER_SPEECH:
+                    # Patient finished speaking → hand off to Gemini
+                    print(f"👂 VAD: เงียบ {SILENCE_AFTER_SPEECH}s หลังพูด → ส่ง Gemini")
+                    break
+
+                if not speech_detected and (now - no_speech_start) >= NO_SPEECH_TIMEOUT:
+                    # Nobody spoke → close window
+                    print(f"👂 VAD: ไม่มีเสียง {NO_SPEECH_TIMEOUT}s → ปิดไมค์")
+                    self.audio_handler.muted = True
+                    await self.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": MAX_LISTEN})
+                    await self.update_state("idle")
+                    return
+
+            # Countdown display (once per second)
+            remaining = max(0, int(MAX_LISTEN - elapsed))
+            if remaining != last_countdown:
+                last_countdown = remaining
+                await self.broadcast_to_frontend({
+                    "type": "countdown",
+                    "seconds": remaining,
+                    "total": MAX_LISTEN
+                })
+
+        # ActivityEnd → Gemini processes the turn and responds
+        if self.state == "listening":
+            self.audio_handler.muted = True
+            await self.gemini_client.send_activity_end()   # ← สัญญาณ "turn done"
+            await self.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": MAX_LISTEN})
+            print("👂 Auto-listen: ActivityEnd → รอ Gemini ตอบ...")
+            await self.update_state("thinking")
+            asyncio.create_task(self._thinking_timeout_checker())
+
+    async def handle_ptt_release(self):
+        """PTT released manually — mute mic + send ActivityEnd to Gemini."""
+        print("🎤 PTT: ปิดไมค์ + ActivityEnd")
+        self.audio_handler.muted = True
+        if self.gemini_client.is_connected:
+            await self.gemini_client.send_activity_end()   # ← บอก Gemini ว่าพูดจบแล้ว
+        await self.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": 30})
+        if self.state == "listening":
+            await self.update_state("thinking")
+            asyncio.create_task(self._thinking_timeout_checker())
+
+    async def _thinking_timeout_checker(self):
+        """Safety net: reset to idle if thinking for too long."""
+        await asyncio.sleep(12.0)
+        if self.state == "thinking":
+            print("⏳ Thinking timeout: ไม่ได้รับการตอบกลับจาก Gemini → idle")
+            await self.update_state("idle")
+            await self.broadcast_to_frontend({
+                "type": "transcript",
+                "text": "ไม่ได้ยินเสียงตอบรับครับ ลองพูดใหม่หรือกดปุ่มได้เลย"
+            })
+
+    async def start(self):
+        """Start backend servers and loop processes."""
+        # Re-bind AudioHandler to the current running event loop and recreate the queue
+        self.audio_handler.loop = asyncio.get_running_loop()
+        self.audio_handler.input_queue = asyncio.Queue()
+        
+        # Start sound streams
+        self.audio_handler.start()
+        
+        # Start always-on wake word detector (runs in its own thread)
+        self.wake_word.start(asyncio.get_running_loop())
+        
+        # Attempt to auto-connect to Gemini Live API on start
+        await self.gemini_client.connect()
+        
+        # Start background loop for reminder scheduling
+        asyncio.create_task(self._reminder_loop())
+        
+        print(f"🚀 Starting Local WebSocket Server on port {PORT}...")
+        async with websockets.serve(self._websocket_handler, "0.0.0.0", PORT):
+            await asyncio.Future() # keep server running
+
+    async def _websocket_handler(self, websocket):
+        """Handles incoming commands/events from the browser UI."""
+        await self.register_client(websocket)
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get("type")
+                    
+                    if msg_type == "ptt_press":
+                        await self.handle_ptt_press()
+                    elif msg_type == "ptt_release":
+                        await self.handle_ptt_release()
+                    elif msg_type == "test_speaker":
+                        print("🔊 Test speaker requested from UI")
+                        self.audio_handler.clear_playback()
+                        
+                        # Generate a 1-second 440Hz sine wave tone at the output samplerate
+                        fs = self.audio_handler.output_sample_rate
+                        duration = 1.0 # 1 second
+                        t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+                        tone = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16)
+                        
+                        # Queue the tone
+                        self.audio_handler.play_audio_chunk(tone.tobytes())
+                    elif msg_type == "ack_reminder":
+                        reminder_id = data.get("reminder_id")
+                        db_manager.acknowledge_reminder(reminder_id)
+                        print(f"⏰ Reminder {reminder_id} acknowledged.")
+                    elif msg_type == "inject_mock_vitals":
+                        # For developer testing via UI buttons
+                        vital_type = data.get("vital_type")
+                        value = data.get("value")
+                        unit = data.get("unit")
+                        status = data.get("status", "normal")
+                        db_manager.add_vital(vital_type, value, unit, status)
+                        await self.send_latest_vitals_to_ui()
+                        print(f"🩺 Injected vital: {vital_type}={value}{unit}")
+                        
+                        # Also feed into Gemini context as a prompt/notification
+                        if self.gemini_client.is_connected:
+                            # Let the model know new vitals are available so it can comment on them
+                            await self.gemini_client.session.send_realtime_input(
+                                text=f"[SYSTEM_ALERT: Patient just measured their {vital_type}. Value is {value} {unit}. Status: {status}. Provide a supportive response if critical or say nothing if normal.]"
+                            )
+                except Exception as ex:
+                    print(f"Error parsing websocket message: {ex}")
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            await self.unregister_client(websocket)
+
+    async def _reminder_loop(self):
+        """Background loop that checks for active reminders every 10 seconds."""
+        while True:
+            try:
+                now = datetime.now()
+                now_minute = now.strftime("%H:%M")
+                
+                # Check only once per minute
+                if now_minute != self.last_reminder_minute:
+                    active_reminders = db_manager.get_active_reminders()
+                    for r in active_reminders:
+                        if r['time'] == now_minute:
+                            self.last_reminder_minute = now_minute
+                            print(f"⏰ Med Alert! Triggering reminder: {r['medicine_name']} ({r['dosage']})")
+                            
+                            # 1. Update UI to display the Medication Alert card
+                            await self.broadcast_to_frontend({
+                                "type": "show_card",
+                                "card_type": "reminder_alert",
+                                "title": "🚨 ได้เวลาทานยาแล้วครับ!",
+                                "body": f"กรุณาทาน: {r['medicine_name']}\nขนาด: {r['dosage']}\nเวลา: {r['time']} น.",
+                                "payload": json.dumps(r)
+                            })
+                            
+                            # 2. Inject text into the Gemini Live session so it speaks the announcement
+                            if self.gemini_client.is_connected:
+                                # Tell the model to voice-alert
+                                await self.gemini_client.session.send_realtime_input(
+                                    text=f"[SYSTEM_ALERT: Medication reminder time! Please announce to the user in a warm voice: 'ได้เวลาทานยา {r['medicine_name']} ขนาด {r['dosage']} แล้วค่ะ']"
+                                )
+                            
+                            # 3. Change facial emotion to alert/neutral
+                            await self.broadcast_to_frontend({
+                                "type": "emotion_change",
+                                "emotion": "concerned",
+                                "intensity": 0.8
+                            })
+            except Exception as e:
+                print(f"Error in reminder scheduler: {e}")
+                
+            await asyncio.sleep(10)
+
+if __name__ == "__main__":
+    manager = StateManager()
+    try:
+        asyncio.run(manager.start())
+    except KeyboardInterrupt:
+        print("\nStopping orchestrator...")

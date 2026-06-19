@@ -1,0 +1,842 @@
+/* =====================================================
+   JARVIS ROBOT FACE — Premium Design
+   Eyes-based animated robot UI
+   ===================================================== */
+
+/* ---------- Fonts & Reset ---------- */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Sarabun:wght@300;400;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Colors */
+  --bg-deep:    #050b18;
+  --bg-card:    #0d1628;
+  --bg-card2:   #111d35;
+  --border:     rgba(0, 200, 255, 0.12);
+  --text-main:  #e2e8f0;
+  --text-dim:   #6b7280;
+
+  /* Eye iris colors per state */
+  --iris-idle:      #1a6ef5;
+  --iris-listen:    #00d4ff;
+  --iris-think:     #a855f7;
+  --iris-speak:     #10b981;
+  --iris-happy:     #f59e0b;
+  --iris-concerned: #ef4444;
+  --iris-sad:       #60a5fa;
+  --iris-sleepy:    #374151;
+
+  /* Glow colors */
+  --glow-idle:      rgba(26, 110, 245, 0.35);
+  --glow-listen:    rgba(0, 212, 255, 0.55);
+  --glow-think:     rgba(168, 85, 247, 0.45);
+  --glow-speak:     rgba(16, 185, 129, 0.5);
+  --glow-happy:     rgba(245, 158, 11, 0.55);
+  --glow-concerned: rgba(239, 68, 68, 0.55);
+
+  /* Active iris state (changed by JS) */
+  --iris-current:   var(--iris-idle);
+  --glow-current:   var(--glow-idle);
+
+  /* Sizing — optimized for 800×480 Pi touchscreen */
+  --eye-size:       118px;
+  --eye-gap:        34px;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-deep);
+  color: var(--text-main);
+  font-family: 'Outfit', 'Sarabun', sans-serif;
+  overflow: hidden;
+}
+
+/* =====================================================
+   LAYOUT
+   ===================================================== */
+.app-container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.main-display {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px 14px;
+  min-width: 0;
+  position: relative;
+}
+
+/* =====================================================
+   FACE STAGE — tap to talk
+   ===================================================== */
+.face-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  cursor: pointer;          /* shows it's tappable */
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* Countdown arc overlaid on face-stage — hidden, countdown shown in status hint */
+.face-countdown-arc {
+  display: none;
+}
+
+/* Tap hint — shown only in idle state */
+.face-tap-hint {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: 'Outfit', sans-serif;
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+  white-space: nowrap;
+}
+/* Hide hint when not idle */
+.state-listening .face-tap-hint,
+.state-thinking  .face-tap-hint,
+.state-speaking  .face-tap-hint {
+  opacity: 0;
+}
+
+/* Ambient glow rings */
+.ambient-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid var(--iris-current, var(--iris-idle));
+  opacity: 0.1;
+  pointer-events: none;
+  transition: border-color 0.8s ease, opacity 0.8s ease;
+}
+.ring-1 { width: 340px; height: 340px; animation: breathe 4s ease-in-out infinite; }
+.ring-2 { width: 420px; height: 420px; animation: breathe 4s ease-in-out infinite 0.5s; opacity: 0.06; }
+.ring-3 { width: 500px; height: 500px; animation: breathe 4s ease-in-out infinite 1s; opacity: 0.04; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.10; }
+  50%       { transform: scale(1.04); opacity: 0.20; }
+}
+
+/* =====================================================
+   ROBOT HEAD
+   ===================================================== */
+.robot-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  z-index: 2;
+}
+
+/* State badge above eyes */
+.robot-state-badge {
+  font-family: 'Outfit', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: var(--iris-current, var(--iris-idle));
+  padding: 3px 12px;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  opacity: 0.85;
+  transition: color 0.5s ease;
+  background: rgba(0,0,0,0.3);
+}
+
+/* =====================================================
+   EYES
+   ===================================================== */
+.robot-eyes-row {
+  display: flex;
+  align-items: center;
+  gap: var(--eye-gap);
+}
+
+.eye-wrap {
+  position: relative;
+  width: var(--eye-size);
+  height: var(--eye-size);
+  border-radius: 50%;
+}
+
+/* Outer glow ring */
+.eye-outer-glow {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--glow-current, var(--glow-idle)), transparent 70%);
+  transition: background 0.6s ease;
+  animation: eye-pulse 3s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes eye-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%       { opacity: 1.0; transform: scale(1.06); }
+}
+
+/* Eye socket (dark outer ring) */
+.eye-socket {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #0a0f1e;
+  border: 3px solid rgba(255,255,255,0.08);
+  overflow: hidden;
+  box-shadow:
+    inset 0 2px 12px rgba(0,0,0,0.8),
+    0 0 30px var(--glow-current, var(--glow-idle));
+  transition: box-shadow 0.5s ease;
+}
+
+/* Eye white (sclera) */
+.eye-white {
+  position: absolute;
+  inset: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #d6eef8, #b8d8e8 60%, #8ab8cc);
+  overflow: hidden;
+}
+
+/* Iris */
+.iris {
+  position: absolute;
+  width: 64%;
+  height: 64%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%,
+    rgba(255,255,255,0.3),
+    var(--iris-current, var(--iris-idle)) 40%,
+    color-mix(in srgb, var(--iris-current, var(--iris-idle)) 60%, black) 100%
+  );
+  transition: background 0.5s ease, transform 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  will-change: transform;
+}
+
+/* Iris inner detail ring */
+.iris-inner {
+  position: absolute;
+  inset: 15%;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* Pupil */
+.pupil {
+  position: absolute;
+  width: 48%;
+  height: 48%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #1a1a2e, #000);
+  transition: transform 0.4s ease, width 0.3s ease, height 0.3s ease;
+}
+
+/* Highlights */
+.pupil-highlight {
+  position: absolute;
+  width: 28%;
+  height: 28%;
+  top: 15%;
+  left: 18%;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.9);
+  filter: blur(1px);
+}
+.pupil-highlight-sm {
+  position: absolute;
+  width: 14%;
+  height: 14%;
+  top: 52%;
+  left: 58%;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.5);
+}
+
+/* Eye shine overlay */
+.eye-shine {
+  position: absolute;
+  top: 8%;
+  left: 12%;
+  width: 30%;
+  height: 22%;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.18);
+  transform: rotate(-20deg);
+  pointer-events: none;
+}
+
+/* Eyelids */
+.eyelid {
+  position: absolute;
+  left: 0; right: 0;
+  background: #0a0f1e;
+  transition: height 0.12s ease;
+  pointer-events: none;
+  z-index: 10;
+}
+.eyelid-top  { top: 0;    height: 0; border-radius: 0 0 50% 50%; }
+.eyelid-bottom { bottom: 0; height: 0; border-radius: 50% 50% 0 0; }
+
+/* =====================================================
+   ROBOT NAME PLATE
+   ===================================================== */
+.robot-name-plate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  margin-top: 2px;
+}
+
+.robot-name {
+  font-family: 'Outfit', sans-serif;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  color: var(--iris-current, var(--iris-idle));
+  text-shadow: 0 0 24px var(--glow-current, var(--glow-idle));
+  transition: color 0.5s ease, text-shadow 0.5s ease;
+}
+
+.robot-subtitle {
+  font-size: 9px;
+  letter-spacing: 2.5px;
+  color: var(--text-dim);
+  font-weight: 300;
+  text-transform: uppercase;
+}
+
+/* =====================================================
+   LISTENING WAVE BARS
+   ===================================================== */
+.listen-bars {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  margin-top: 2px;
+}
+.listen-bars span {
+  display: block;
+  width: 3px;
+  border-radius: 4px;
+  background: var(--iris-current, var(--iris-listen));
+  height: 6px;
+  animation: wave-bar 0.8s ease-in-out infinite;
+}
+.listen-bars span:nth-child(1) { animation-delay: 0.0s; }
+.listen-bars span:nth-child(2) { animation-delay: 0.1s; }
+.listen-bars span:nth-child(3) { animation-delay: 0.2s; }
+.listen-bars span:nth-child(4) { animation-delay: 0.3s; }
+.listen-bars span:nth-child(5) { animation-delay: 0.4s; }
+.listen-bars span:nth-child(6) { animation-delay: 0.3s; }
+.listen-bars span:nth-child(7) { animation-delay: 0.2s; }
+.listen-bars span:nth-child(8) { animation-delay: 0.1s; }
+.listen-bars span:nth-child(9) { animation-delay: 0.0s; }
+
+@keyframes wave-bar {
+  0%, 100% { height: 6px; }
+  50%       { height: 24px; }
+}
+
+/* Show bars when listening or speaking */
+.state-listening  .listen-bars,
+.state-speaking   .listen-bars { opacity: 1; }
+
+/* =====================================================
+   STATE-SPECIFIC EFFECTS on face-stage
+   ===================================================== */
+/* These classes on app-container drive ambient ring color changes via CSS vars */
+.state-listening  { --iris-current: var(--iris-listen);  --glow-current: var(--glow-listen); }
+.state-thinking   { --iris-current: var(--iris-think);   --glow-current: var(--glow-think); }
+.state-speaking   { --iris-current: var(--iris-speak);   --glow-current: var(--glow-speak); }
+
+/* =====================================================
+   STATUS INDICATOR (replaces transcript box)
+   ===================================================== */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 34px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.status-dots {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.status-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--iris-current, var(--iris-idle));
+  transition: background 0.5s ease, border-radius 0.3s ease;
+  animation: dot-idle 2.8s ease-in-out infinite;
+}
+.status-dots span:nth-child(2) { animation-delay: 0.45s; }
+.status-dots span:nth-child(3) { animation-delay: 0.9s; }
+
+@keyframes dot-idle {
+  0%, 100% { opacity: 0.2; transform: scale(0.8); }
+  50%       { opacity: 0.65; transform: scale(1.1); }
+}
+
+/* LISTENING — fast flutter */
+.state-listening .status-dots span {
+  animation: dot-listen 0.55s ease-in-out infinite alternate;
+}
+.state-listening .status-dots span:nth-child(2) { animation-delay: 0.12s; }
+.state-listening .status-dots span:nth-child(3) { animation-delay: 0.24s; }
+@keyframes dot-listen {
+  from { opacity: 0.35; transform: scale(0.85); }
+  to   { opacity: 1;    transform: scale(1.35); }
+}
+
+/* THINKING — typing-indicator bounce */
+.state-thinking .status-dots span {
+  animation: dot-think 1.3s cubic-bezier(0.4,0,0.6,1) infinite;
+  opacity: 1;
+}
+.state-thinking .status-dots span:nth-child(1) { animation-delay: 0.0s; }
+.state-thinking .status-dots span:nth-child(2) { animation-delay: 0.22s; }
+.state-thinking .status-dots span:nth-child(3) { animation-delay: 0.44s; }
+@keyframes dot-think {
+  0%, 80%, 100% { transform: translateY(0)    scale(1);   opacity: 0.45; }
+  40%           { transform: translateY(-9px) scale(1.25); opacity: 1;    }
+}
+
+/* SPEAKING — vertical wave bars */
+.state-speaking .status-dots span {
+  animation: dot-speak 0.45s ease-in-out infinite alternate;
+  border-radius: 3px;
+  width: 5px;
+}
+.state-speaking .status-dots span:nth-child(1) { animation-delay: 0.0s; }
+.state-speaking .status-dots span:nth-child(2) { animation-delay: 0.12s; }
+.state-speaking .status-dots span:nth-child(3) { animation-delay: 0.24s; }
+@keyframes dot-speak {
+  from { height: 5px; }
+  to   { height: 20px; }
+}
+
+.status-hint {
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 400;
+  transition: color 0.4s ease;
+  min-width: 80px;
+}
+
+/* =====================================================
+   FLOATING SPEECH BUBBLE
+   ===================================================== */
+.speech-bubble {
+  width: 92%;
+  max-width: 660px;
+  background: rgba(5, 11, 24, 0.88);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.45),
+              inset 0 1px 0 rgba(255,255,255,0.04);
+  /* Hidden by default */
+  opacity: 0;
+  max-height: 0;
+  padding: 0 20px;
+  overflow: hidden;
+  transition: opacity 0.35s ease, max-height 0.35s ease, padding 0.35s ease;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+.speech-bubble.visible {
+  opacity: 1;
+  max-height: 90px;
+  padding: 10px 20px;
+}
+.speech-bubble p {
+  font-size: 14px;
+  font-family: 'Sarabun', sans-serif;
+  color: var(--text-main);
+  line-height: 1.65;
+  text-align: center;
+}
+
+/* =====================================================
+   CONTROLS
+   ===================================================== */
+.controls-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding-bottom: 4px;
+  width: 100%;
+}
+
+/* ---- PTT wrapper ---- */
+.ptt-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Large glowing PTT circle */
+.ptt-btn {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 2px solid rgba(26, 110, 245, 0.5);
+  background: linear-gradient(145deg, #1345cc, #091852);
+  box-shadow:
+    0 0 28px rgba(26, 110, 245, 0.35),
+    0 6px 24px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255,255,255,0.06);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.2s ease, background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}
+
+/* Outer breathing ring */
+.ptt-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid rgba(26, 110, 245, 0.35);
+  animation: ptt-ring-idle 3s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes ptt-ring-idle {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50%       { opacity: 1;    transform: scale(1.06); }
+}
+
+/* Countdown arc — conic-gradient depletes as time runs out */
+.ptt-countdown-arc {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: conic-gradient(
+    rgba(0, 212, 255, 0.7) var(--countdown-pct, 0%),
+    transparent var(--countdown-pct, 0%)
+  );
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  /* Rotate so arc starts at top (12 o'clock) */
+  transform: rotate(-90deg);
+}
+.ptt-countdown-arc.active {
+  opacity: 1;
+}
+
+/* Clean center dot inside PTT (replaces emoji) */
+.ptt-center-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+  transition: transform 0.12s ease, background 0.2s ease;
+  box-shadow: 0 0 12px rgba(255,255,255,0.5);
+}
+.ptt-btn.pressed .ptt-center-dot {
+  transform: scale(0.8);
+  background: #00d4ff;
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.8);
+}
+
+/* Mic indicator in status bar — only visible when LISTENING */
+.mic-indicator {
+  font-size: 16px;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none;
+}
+.state-listening .mic-indicator {
+  opacity: 1;
+  transform: scale(1);
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.2); }
+}
+
+.ptt-btn:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 0 44px rgba(26, 110, 245, 0.55),
+    0 10px 28px rgba(0,0,0,0.6),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.ptt-btn.pressed {
+  transform: scale(0.93);
+  background: linear-gradient(145deg, #00a8c4, #005570);
+  border-color: rgba(0, 212, 255, 0.7);
+  box-shadow:
+    0 0 55px rgba(0, 212, 255, 0.65),
+    0 3px 14px rgba(0,0,0,0.5);
+}
+.ptt-btn.pressed .ptt-ring {
+  border-color: rgba(0, 212, 255, 0.7);
+  animation: ptt-ring-active 0.75s ease-in-out infinite;
+}
+@keyframes ptt-ring-active {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%       { opacity: 1;   transform: scale(1.18); }
+}
+.ptt-btn.pressed .ptt-icon-wrap { transform: scale(0.9); }
+
+/* Label under PTT */
+.ptt-label {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 400;
+  text-transform: uppercase;
+  transition: color 0.25s;
+  pointer-events: none;
+}
+.ptt-btn.pressed ~ .ptt-label { color: #00d4ff; }
+
+/* =====================================================
+   TEST SPEAKER — top-left floating button
+   ===================================================== */
+.test-audio-btn {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(10, 18, 40, 0.8);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, transform 0.15s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.test-audio-btn:hover  { background: rgba(30, 50, 80, 0.9); transform: scale(1.1); }
+.test-audio-btn:active { transform: scale(0.95); }
+.test-icon { font-size: 18px; line-height: 1; }
+
+/* Spacer for visual balance */
+.spacer-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+
+/* =====================================================
+   STATUS DOT — small indicator in top-right corner
+   ===================================================== */
+.ws-status {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  font-weight: 600;
+  color: var(--text-dim);
+  z-index: 50;
+  background: rgba(5,11,24,0.7);
+  padding: 5px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+}
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #374151;
+  transition: background 0.3s;
+}
+.ws-status.online .status-dot  { background: #10b981; box-shadow: 0 0 8px rgba(16,185,129,0.7); }
+.ws-status.online .status-text { color: #10b981; }
+
+/* Sidebar styles removed — full screen mode */
+
+.info-section {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.info-section h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+/* Vitals Grid */
+.vitals-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.vital-card {
+  background: var(--bg-card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.vital-card.status-high { border-color: #ef4444; box-shadow: 0 0 12px rgba(239,68,68,0.3); }
+.vital-card.status-low  { border-color: #f59e0b; box-shadow: 0 0 12px rgba(245,158,11,0.3); }
+
+.vital-icon  { font-size: 18px; margin-bottom: 4px; }
+.vital-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-family: 'Sarabun'; }
+.vital-value { font-size: 20px; font-weight: 700; color: var(--text-main); line-height: 1; }
+.vital-unit  { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+
+/* Content Cards */
+.content-cards-container { flex: 1; }
+.cards-list { display: flex; flex-direction: column; gap: 8px; }
+
+.placeholder-card {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  font-family: 'Sarabun';
+}
+
+.dynamic-card {
+  background: var(--bg-card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  animation: slide-in 0.3s ease;
+}
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+.dynamic-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-main); }
+.dynamic-card p  { font-size: 12px; color: var(--text-dim); font-family: 'Sarabun'; line-height: 1.5; }
+
+/* =====================================================
+   MODALS / OVERLAYS
+   ===================================================== */
+.telemedicine-overlay,
+.alert-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(12px);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+
+.telemed-modal, .alert-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 28px;
+  max-width: 560px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.telemed-header h2 { font-size: 20px; margin-bottom: 6px; }
+.telemed-header p  { color: var(--text-dim); font-family: 'Sarabun'; font-size: 14px; margin-bottom: 20px; }
+
+.video-grid  { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+.video-box   { background: #000; border-radius: 12px; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; position: relative; }
+.video-label { position: absolute; top: 8px; left: 8px; font-size: 10px; color: rgba(255,255,255,0.5); }
+.mock-avatar { font-size: 28px; }
+.connection-spinner {
+  position: absolute; bottom: 10px; right: 10px;
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: #00d4ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.telemed-footer { text-align: center; }
+
+.alert-modal { text-align: center; }
+.alert-icon  { font-size: 40px; margin-bottom: 12px; animation: ring-bell 1s ease-in-out 3; }
+@keyframes ring-bell {
+  0%, 100% { transform: rotate(0); }
+  25%       { transform: rotate(15deg); }
+  75%       { transform: rotate(-15deg); }
+}
+.alert-modal h2 { font-size: 20px; margin-bottom: 8px; }
+.alert-modal p  { color: var(--text-dim); font-family: 'Sarabun'; font-size: 14px; margin-bottom: 20px; }
+.alert-actions  { display: flex; justify-content: center; gap: 12px; }
+
+/* Buttons */
+.btn { padding: 12px 24px; border-radius: 50px; border: none; font-size: 14px; font-family: 'Sarabun'; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.btn-danger  { background: #dc2626; color: #fff; }
+.btn-success { background: #10b981; color: #fff; }
+.btn:hover   { filter: brightness(1.15); transform: translateY(-1px); }
+
+/* =====================================================
+   SCROLLBAR
+   ===================================================== */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }

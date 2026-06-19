@@ -17,6 +17,8 @@ rsync -avz --delete \
     --exclude 'node_modules/' \
     --exclude '.env' \
     --exclude 'deploy.sh' \
+    --exclude 'backend/models/' \
+    --exclude '*.db' \
     ./ "$PI_HOST:$PI_DEST"
 
 echo "✅ Sync complete!"
