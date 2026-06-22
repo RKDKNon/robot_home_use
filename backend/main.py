@@ -14,6 +14,8 @@ import db_manager
 from audio_handler import AudioHandler
 from gemini_client import GeminiClient
 from wake_word import WakeWordDetector
+from reasoning_client import ReasoningClient
+from camera_handler import CameraHandler
 
 load_dotenv()
 
@@ -28,7 +30,9 @@ class StateManager:
         db_manager.init_db()
         self.audio_handler = AudioHandler()
         self.gemini_client = GeminiClient(self.audio_handler, self)
-        self.wake_word = WakeWordDetector(self)  # Wake word "Jarvis" detector
+        self.wake_word = WakeWordDetector(self, self.audio_handler)  # Wake word "Jarvis" detector
+        self.reasoning_client = ReasoningClient()  # mimo-v2.5-pro for deep reasoning
+        self.camera_handler = CameraHandler()  # Webcam for vision
         
         # Wire callback for playback changes (speaking -> idle / idle -> speaking)
         self.audio_handler.on_playback_state_change = self._handle_playback_state_change
@@ -43,13 +47,11 @@ class StateManager:
         """Registers a new WebSocket frontend client and sends current state."""
         self.connected_clients.add(websocket)
         print(f"🖥️ Frontend Client connected. Total: {len(self.connected_clients)}")
-        
-        # Reset state on new connection to prevent lingering listening/speaking state
-        await self.update_state("idle")
-        self.audio_handler.muted = True
-        self.audio_handler.clear_playback()
-        
-        # Send initial state and vitals
+
+        # Don't reset state on new connection — a second tab opening
+        # should not interrupt an active conversation.
+
+        # Send current state and vitals to the new client
         await websocket.send(json.dumps({
             "type": "state_change",
             "state": self.state
@@ -58,7 +60,7 @@ class StateManager:
 
     async def unregister_client(self, websocket):
         """Unregisters a frontend client."""
-        self.connected_clients.remove(websocket)
+        self.connected_clients.discard(websocket)
         print(f"🖥️ Frontend Client disconnected. Total: {len(self.connected_clients)}")
 
     async def broadcast_to_frontend(self, message: dict):
@@ -66,8 +68,9 @@ class StateManager:
         if not self.connected_clients:
             return
         payload = json.dumps(message)
-        # Gather all sends
-        await asyncio.gather(*[client.send(payload) for client in self.connected_clients], return_exceptions=True)
+        # Snapshot the set to avoid mutation during iteration
+        clients = list(self.connected_clients)
+        await asyncio.gather(*[client.send(payload) for client in clients], return_exceptions=True)
 
     async def update_state(self, new_state: str):
         """Updates the system state and broadcasts it to the frontend."""
@@ -144,10 +147,92 @@ class StateManager:
                 reason = args.get("reason", "Patient requested escalation")
                 await self.broadcast_to_frontend({
                     "type": "telemedicine_trigger",
-                    "reason": reason
+                    "reason": reason,
+                    "url": "https://hub-api.socare.app/videoCall?roomName=SocareTelemed"
                 })
                 return {"status": "escalating", "message": f"Connecting to Socare doctor. Reason: {reason}"}
-                
+
+            elif name == "clear_conversation":
+                db_manager.clear_conversation()
+                return {"status": "success", "message": "Conversation history cleared"}
+
+            elif name == "think_deeply":
+                question = args.get("question", "")
+                context = args.get("context", "")
+                print(f"🧠 Think deeply: {question[:80]}...")
+                # Show thinking state on UI
+                await self.broadcast_to_frontend({
+                    "type": "emotion_change",
+                    "emotion": "thinking",
+                    "intensity": 0.8
+                })
+                # Route to mimo-v2.5-pro
+                answer = await self.reasoning_client.ask(question, context)
+                print(f"🧠 Reasoning result: {answer[:80]}...")
+                return {"status": "success", "analysis": answer}
+
+            elif name == "look_at_patient":
+                print("📷 Looking at patient...")
+                await self.broadcast_to_frontend({
+                    "type": "transcript",
+                    "text": "📷 กำลังมอง..."
+                })
+                image_data = self.camera_handler.capture_as_base64_with_mime()
+                if not image_data:
+                    return {"error": "camera_failed", "message": "ไม่สามารถเปิดกล้องได้"}
+                await self.broadcast_to_frontend({
+                    "type": "camera_preview",
+                    "image": image_data["data"]
+                })
+                # Send image bytes via realtime_input (NOT in tool response — causes 1011)
+                if self.gemini_client.is_connected and self.gemini_client.session:
+                    try:
+                        import base64 as b64lib
+                        from google.genai import types as gtypes
+                        image_bytes = b64lib.b64decode(image_data["data"])
+                        await self.gemini_client.session.send_realtime_input(
+                            video=gtypes.Blob(
+                                data=image_bytes,
+                                mime_type=image_data["mime_type"]
+                            )
+                        )
+                        print("📷 Image blob sent to Gemini for patient analysis")
+                    except Exception as e:
+                        print(f"⚠️ Failed to send image blob: {e}")
+                return {"status": "success", "message": "ถ่ายแล้ว โปรดวิเคราะห์สีหน้าและอารมณ์เป็นภาษาไทย"}
+
+            elif name == "look_at_object":
+                hint = args.get("hint", "")
+                print(f"📷 Looking at object: {hint}")
+                await self.broadcast_to_frontend({
+                    "type": "transcript",
+                    "text": "📷 กำลังดู..."
+                })
+                image_data = self.camera_handler.capture_as_base64_with_mime()
+                if not image_data:
+                    return {"error": "camera_failed", "message": "ไม่สามารถเปิดกล้องได้"}
+                await self.broadcast_to_frontend({
+                    "type": "camera_preview",
+                    "image": image_data["data"]
+                })
+                # Send image bytes via realtime_input (NOT in tool response — causes 1011)
+                if self.gemini_client.is_connected and self.gemini_client.session:
+                    try:
+                        import base64 as b64lib
+                        from google.genai import types as gtypes
+                        image_bytes = b64lib.b64decode(image_data["data"])
+                        await self.gemini_client.session.send_realtime_input(
+                            video=gtypes.Blob(
+                                data=image_bytes,
+                                mime_type=image_data["mime_type"]
+                            )
+                        )
+                        print("📷 Image blob sent to Gemini for object analysis")
+                    except Exception as e:
+                        print(f"⚠️ Failed to send image blob: {e}")
+                hint_text = f" ({hint})" if hint else ""
+                return {"status": "success", "message": f"ถ่ายแล้ว{hint_text} โปรดระบุว่าคืออะไรเป็นภาษาไทย"}
+
             else:
                 return {"error": "unknown_tool", "message": f"Tool {name} is not implemented"}
         except Exception as e:
@@ -184,22 +269,27 @@ class StateManager:
 
 
     def _handle_playback_state_change(self, is_playing: bool):
-        """Called by AudioHandler when playback starts or stops."""
+        """Called by AudioHandler when playback starts or stops.
+        This runs via call_soon_threadsafe from the playback thread,
+        so it executes in the asyncio event loop thread."""
         if is_playing:
             # Mute mic while Jarvis is speaking (prevent echo)
             self.audio_handler.muted = True
             asyncio.create_task(self.update_state("speaking"))
         else:
-            # Jarvis finished → open mic so patient can respond immediately
-            if self.state == "speaking":
-                asyncio.create_task(self.update_state("idle"))
-                asyncio.create_task(self._auto_listen_after_speaking())
+            # Check if we were speaking (not already idle)
+            # Use create_task chain: first go idle, then auto-listen
+            async def _finish_speaking():
+                await self.update_state("idle")
+                await self._auto_listen_after_speaking()
+            asyncio.create_task(_finish_speaking())
 
     async def _auto_listen_after_speaking(self):
         """After Jarvis finishes speaking, open mic and use amplitude VAD.
 
         Timeline:
-          patient speaks → silence 1.5s → mute mic → THINKING → Gemini responds → SPEAKING
+          wait for Gemini turn_complete → open mic → patient speaks → silence 1.5s
+          → mute mic → THINKING → Gemini responds → SPEAKING
           no speech 8s                 → mute mic → IDLE
           fallback max 30s             → mute mic → THINKING
         """
@@ -209,8 +299,26 @@ class StateManager:
         if not self.gemini_client.is_connected:
             return
 
-        SPEECH_THRESHOLD     = 250    # amplitude above = speech detected
-        SILENCE_AFTER_SPEECH = 1.5    # seconds of silence to release (patient done)
+        # Wait for Gemini to finish its turn before listening for next input
+        # This prevents sending ActivityEnd while Gemini is still processing
+        print("👂 Auto-listen: รอ Gemini turn complete...")
+        try:
+            await asyncio.wait_for(self.gemini_client.turn_complete.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            print("⚠️ Gemini turn_complete timeout — proceeding anyway")
+
+        if self.state != "idle":
+            return
+        if not self.gemini_client.is_connected:
+            return
+
+        # Send ActivityStart to signal we're ready for user input
+        if not await self.gemini_client.send_activity_start():
+            print("⚠️ Failed to send ActivityStart — skipping auto-listen")
+            return
+
+        SPEECH_THRESHOLD     = 150    # amplitude above = speech detected (lowered for elderly/soft speech)
+        SILENCE_AFTER_SPEECH = 2.0    # seconds of silence to release (increased for elderly speech pace)
         NO_SPEECH_TIMEOUT    = 8.0    # give up if nobody speaks at all
         MAX_LISTEN           = 30     # absolute max (fallback)
         TICK                 = 0.25   # VAD poll rate
@@ -226,7 +334,7 @@ class StateManager:
 
         speech_detected = False
         silence_start   = None
-        no_speech_start = asyncio.get_event_loop().time()
+        no_speech_start = asyncio.get_running_loop().time()
         last_countdown  = MAX_LISTEN + 1
         elapsed         = 0.0
 
@@ -238,7 +346,7 @@ class StateManager:
                 return  # Gemini responded / manually interrupted
 
             amp = self.audio_handler.last_amplitude
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
 
             if amp > SPEECH_THRESHOLD:
                 # Patient is speaking
@@ -275,6 +383,11 @@ class StateManager:
         # ActivityEnd → Gemini processes the turn and responds
         if self.state == "listening":
             self.audio_handler.muted = True
+            # Store user turn in conversation history
+            try:
+                db_manager.add_conversation("user", "[ผู้ป่วยพูด]")
+            except Exception as e:
+                print(f"⚠️ Failed to save user turn: {e}")
             await self.gemini_client.send_activity_end()   # ← สัญญาณ "turn done"
             await self.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": MAX_LISTEN})
             print("👂 Auto-listen: ActivityEnd → รอ Gemini ตอบ...")
@@ -285,6 +398,11 @@ class StateManager:
         """PTT released manually — mute mic + send ActivityEnd to Gemini."""
         print("🎤 PTT: ปิดไมค์ + ActivityEnd")
         self.audio_handler.muted = True
+        # Store user turn in conversation history
+        try:
+            db_manager.add_conversation("user", "[ผู้ป่วยพูด]")
+        except Exception as e:
+            print(f"⚠️ Failed to save user turn: {e}")
         if self.gemini_client.is_connected:
             await self.gemini_client.send_activity_end()   # ← บอก Gemini ว่าพูดจบแล้ว
         await self.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": 30})
@@ -294,7 +412,7 @@ class StateManager:
 
     async def _thinking_timeout_checker(self):
         """Safety net: reset to idle if thinking for too long."""
-        await asyncio.sleep(12.0)
+        await asyncio.sleep(30.0)
         if self.state == "thinking":
             print("⏳ Thinking timeout: ไม่ได้รับการตอบกลับจาก Gemini → idle")
             await self.update_state("idle")
@@ -302,6 +420,8 @@ class StateManager:
                 "type": "transcript",
                 "text": "ไม่ได้ยินเสียงตอบรับครับ ลองพูดใหม่หรือกดปุ่มได้เลย"
             })
+            # Don't force reconnect — Gemini may still be processing.
+            # Let the user try again naturally.
 
     async def start(self):
         """Start backend servers and loop processes."""
@@ -320,7 +440,11 @@ class StateManager:
         
         # Start background loop for reminder scheduling
         asyncio.create_task(self._reminder_loop())
-        
+
+        # Start continuous camera monitoring
+        self.camera_handler.start()
+        asyncio.create_task(self._camera_monitor_loop())
+
         print(f"🚀 Starting Local WebSocket Server on port {PORT}...")
         async with websockets.serve(self._websocket_handler, "0.0.0.0", PORT):
             await asyncio.Future() # keep server running
@@ -338,10 +462,64 @@ class StateManager:
                         await self.handle_ptt_press()
                     elif msg_type == "ptt_release":
                         await self.handle_ptt_release()
+                    elif msg_type == "clear_history":
+                        db_manager.clear_conversation()
+                        await websocket.send(json.dumps({
+                            "type": "transcript",
+                            "text": "🗑️ ลบประวัติการสนทนาแล้วครับ"
+                        }))
+                        print("🗑️ Conversation history cleared by user")
+                    elif msg_type == "capture_camera":
+                        print("📷 Camera capture requested from UI")
+                        image_data = self.camera_handler.capture_as_base64_with_mime()
+                        if image_data:
+                            # Show preview on UI
+                            await self.broadcast_to_frontend({
+                                "type": "camera_preview",
+                                "image": image_data["data"]
+                            })
+                            # Send image to Gemini as a proper turn (ActivityStart → image → text → ActivityEnd)
+                            if self.gemini_client.is_connected:
+                                try:
+                                    import base64
+                                    from google.genai import types as gtypes
+                                    image_bytes = base64.b64decode(image_data["data"])
+                                    # Open a new turn
+                                    await self.gemini_client.send_activity_start()
+                                    # Send actual image blob so Gemini can see it
+                                    await self.gemini_client.session.send_realtime_input(
+                                        video=gtypes.Blob(
+                                            data=image_bytes,
+                                            mime_type=image_data["mime_type"]
+                                        )
+                                    )
+                                    # Add Thai text prompt
+                                    await self.gemini_client.session.send_realtime_input(
+                                        text="ผู้ใช้กดปุ่มกล้องเพื่อให้ดูภาพ กรุณาบอกสิ่งที่เห็นในภาพเป็นภาษาไทย"
+                                    )
+                                    # Close turn — Gemini will now respond
+                                    await self.gemini_client.send_activity_end()
+                                    await self.update_state("thinking")
+                                    asyncio.create_task(self._thinking_timeout_checker())
+                                    print("📷 Image sent to Gemini — waiting for response")
+                                except Exception as e:
+                                    print(f"⚠️ Failed to send camera to Gemini: {e}")
+                        else:
+                            await self.broadcast_to_frontend({
+                                "type": "transcript",
+                                "text": "❌ ไม่สามารถเปิดกล้องได้"
+                            })
                     elif msg_type == "test_speaker":
                         print("🔊 Test speaker requested from UI")
                         self.audio_handler.clear_playback()
-                        
+                    elif msg_type == "trigger_telemedicine_manual":
+                        print("🩺 Telemedicine requested from UI")
+                        await self.broadcast_to_frontend({
+                            "type": "telemedicine_trigger",
+                            "reason": "Patient requested doctor",
+                            "url": "https://hub-api.socare.app/videoCall?roomName=SocareTelemed"
+                        })
+
                         # Generate a 1-second 440Hz sine wave tone at the output samplerate
                         fs = self.audio_handler.output_sample_rate
                         duration = 1.0 # 1 second
@@ -352,8 +530,11 @@ class StateManager:
                         self.audio_handler.play_audio_chunk(tone.tobytes())
                     elif msg_type == "ack_reminder":
                         reminder_id = data.get("reminder_id")
-                        db_manager.acknowledge_reminder(reminder_id)
-                        print(f"⏰ Reminder {reminder_id} acknowledged.")
+                        try:
+                            db_manager.acknowledge_reminder(reminder_id)
+                            print(f"⏰ Reminder {reminder_id} acknowledged.")
+                        except Exception as e:
+                            print(f"⚠️ Failed to acknowledge reminder {reminder_id}: {e}")
                     elif msg_type == "inject_mock_vitals":
                         # For developer testing via UI buttons
                         vital_type = data.get("vital_type")
@@ -366,10 +547,12 @@ class StateManager:
                         
                         # Also feed into Gemini context as a prompt/notification
                         if self.gemini_client.is_connected:
-                            # Let the model know new vitals are available so it can comment on them
-                            await self.gemini_client.session.send_realtime_input(
-                                text=f"[SYSTEM_ALERT: Patient just measured their {vital_type}. Value is {value} {unit}. Status: {status}. Provide a supportive response if critical or say nothing if normal.]"
-                            )
+                            try:
+                                await self.gemini_client.session.send_realtime_input(
+                                    text=f"[SYSTEM_ALERT: Patient just measured their {vital_type}. Value is {value} {unit}. Status: {status}. Provide a supportive response if critical or say nothing if normal.]"
+                                )
+                            except Exception as e:
+                                print(f"⚠️ Failed to send vitals alert to Gemini: {e}")
                 except Exception as ex:
                     print(f"Error parsing websocket message: {ex}")
         except websockets.exceptions.ConnectionClosed:
@@ -403,10 +586,12 @@ class StateManager:
                             
                             # 2. Inject text into the Gemini Live session so it speaks the announcement
                             if self.gemini_client.is_connected:
-                                # Tell the model to voice-alert
-                                await self.gemini_client.session.send_realtime_input(
-                                    text=f"[SYSTEM_ALERT: Medication reminder time! Please announce to the user in a warm voice: 'ได้เวลาทานยา {r['medicine_name']} ขนาด {r['dosage']} แล้วค่ะ']"
-                                )
+                                try:
+                                    await self.gemini_client.session.send_realtime_input(
+                                        text=f"[SYSTEM_ALERT: Medication reminder time! Please announce to the user in a warm voice: 'ได้เวลาทานยา {r['medicine_name']} ขนาด {r['dosage']} แล้วค่ะ']"
+                                    )
+                                except Exception as e:
+                                    print(f"⚠️ Failed to send reminder alert to Gemini: {e}")
                             
                             # 3. Change facial emotion to alert/neutral
                             await self.broadcast_to_frontend({
@@ -418,6 +603,31 @@ class StateManager:
                 print(f"Error in reminder scheduler: {e}")
                 
             await asyncio.sleep(10)
+
+    async def _camera_monitor_loop(self):
+        """Periodically capture frames and send to Gemini for patient monitoring.
+        Only analyzes when patient is idle (not in active conversation)."""
+        await asyncio.sleep(10)  # Wait for system to initialize
+        while True:
+            try:
+                # Only analyze when idle — don't interrupt conversations
+                if self.state == "idle" and self.gemini_client.is_connected:
+                    image_data = self.camera_handler.capture_as_base64_with_mime()
+                    if image_data:
+                        # Inject camera observation into Gemini session
+                        try:
+                            await self.gemini_client.session.send_realtime_input(
+                                text="[SYSTEM: Periodic camera check. The patient is currently idle. "
+                                     "If you notice anything concerning (looks tired, in pain, distressed), "
+                                     "proactively ask how they are feeling. If everything looks normal, say nothing.]"
+                            )
+                            print("📷 Camera: periodic patient check sent to Gemini")
+                        except Exception as e:
+                            print(f"⚠️ Camera monitor inject failed: {e}")
+            except Exception as e:
+                print(f"📷 Camera monitor error: {e}")
+
+            await asyncio.sleep(60)  # Check every 60 seconds
 
 if __name__ == "__main__":
     manager = StateManager()

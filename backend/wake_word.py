@@ -16,16 +16,23 @@ class WakeWordDetector:
       - "hi jarvis"
       - "hello jarvis"
       - "สวัสดีจาวิส"
+
+    IMPORTANT: Uses AudioHandler's shared microphone stream to avoid
+    opening a second stream on the same device (causes conflicts on Pi).
     """
 
     SAMPLE_RATE = 16000
-    CHUNK_SIZE = 4000   # 0.25 seconds per chunk — lightweight
+    CHUNK_SIZE = 1024   # Match AudioHandler.chunk_size
 
-    def __init__(self, state_manager):
+    def __init__(self, state_manager, audio_handler):
         self.state_manager = state_manager
+        self.audio_handler = audio_handler
         self.loop = None
         self._thread = None
         self._running = False
+        self._rec = None       # Vosk recognizer (set in _run)
+        self._model = None     # Vosk model
+        self._detected = False  # Guard against double-trigger
 
     def start(self, loop: asyncio.AbstractEventLoop):
         """Start the wake word detection thread."""
@@ -64,22 +71,59 @@ class WakeWordDetector:
             print(f"✅ Vosk model ready at {model_dir}")
         except Exception as e:
             print(f"❌ Failed to download Vosk model: {e}")
+            # Clean up partial zip if exists
+            if os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except OSError:
+                    pass
             return None
 
         return model_dir
 
+    def _on_mic_audio(self, data_bytes: bytes):
+        """Called by AudioHandler's mic callback — receives raw mic audio.
+
+        Runs in the sounddevice callback thread (not the asyncio thread).
+        Feed audio to Vosk recognizer and check for wake word.
+        """
+        if not self._running or not self._rec:
+            return
+
+        try:
+            text = ""
+            if self._rec.AcceptWaveform(data_bytes):
+                result = json.loads(self._rec.Result())
+                text = result.get("text", "").lower().strip()
+            else:
+                result = json.loads(self._rec.PartialResult())
+                text = result.get("partial", "").lower().strip()
+
+            if text and text != "[unk]" and "jarvis" in text:
+                # Guard against double-trigger from rapid consecutive detections
+                if not self._detected:
+                    self._detected = True
+                    print(f"🔔 Wake word detected: '{text}' → Activating Jarvis!")
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_wake_word_detected(), self.loop
+                    )
+                    # Reset flag after a cooldown to allow re-activation later
+                    threading.Timer(2.0, self._reset_detected).start()
+        except Exception as e:
+            print(f"Wake word processing error: {e}")
+
+    def _reset_detected(self):
+        """Reset detection guard after cooldown."""
+        self._detected = False
+        if self._rec:
+            self._rec.Reset()
+
     def _run(self):
-        """Worker thread: keyword spotting loop."""
+        """Worker thread: initialize Vosk model and register with AudioHandler."""
         try:
             from vosk import Model, KaldiRecognizer
         except ImportError:
             print("❌ vosk not installed. Wake word disabled — use PTT button instead.")
-            return
-
-        try:
-            import sounddevice as sd
-        except ImportError:
-            print("❌ sounddevice not available.")
             return
 
         model_dir = self._download_model()
@@ -87,50 +131,31 @@ class WakeWordDetector:
             return
 
         try:
-            model = Model(model_dir)
+            self._model = Model(model_dir)
             # Keyword list — Vosk will only transcribe these words (very efficient)
             keywords = json.dumps(["jarvis", "jarvis jarvis", "[unk]"])
-            rec = KaldiRecognizer(model, self.SAMPLE_RATE, keywords)
-            rec.SetWords(True)
+            self._rec = KaldiRecognizer(self._model, self.SAMPLE_RATE, keywords)
+            self._rec.SetWords(True)
             print("✅ Vosk wake word ready! Say 'Jarvis' / 'จาวิส' to activate.")
         except Exception as e:
             print(f"❌ Vosk model init failed: {e}")
             return
 
-        def audio_callback(indata, frames, time_info, status):
-            if not self._running:
-                raise sd.CallbackStop()
+        # Register as a shared mic consumer on AudioHandler
+        # This avoids opening a second microphone stream (critical for Pi)
+        self.audio_handler.register_mic_consumer(self._on_mic_audio)
+        print("🎙️  Wake word registered as shared mic consumer.")
 
-            data = bytes(indata)
-
-            # Check partial result first (fires mid-utterance, no silence needed)
-            if rec.AcceptWaveform(data):
-                result = json.loads(rec.Result())
-                text = result.get("text", "").lower().strip()
-            else:
-                result = json.loads(rec.PartialResult())
-                text = result.get("partial", "").lower().strip()
-
-            if text and text != "[unk]" and "jarvis" in text:
-                print(f"🔔 Wake word detected: '{text}' → Activating Jarvis!")
-                asyncio.run_coroutine_threadsafe(
-                    self._on_wake_word_detected(), self.loop
-                )
-                rec.Reset()
-
+        # Keep thread alive while running
         try:
-            with sd.RawInputStream(
-                samplerate=self.SAMPLE_RATE,
-                channels=1,
-                dtype="int16",
-                blocksize=self.CHUNK_SIZE,
-                callback=audio_callback
-            ):
-                print("🎙️  Wake word mic stream active (Vosk).")
-                while self._running:
-                    threading.Event().wait(0.1)
-        except Exception as e:
-            print(f"❌ Wake word stream error: {e}")
+            while self._running:
+                threading.Event().wait(0.5)
+        finally:
+            # Cleanup on exit
+            self.audio_handler.unregister_mic_consumer(self._on_mic_audio)
+            self._rec = None
+            self._model = None
+            print("👂 Wake word detector stopped.")
 
     async def _on_wake_word_detected(self):
         """Activate listening session when wake word heard."""
@@ -151,15 +176,15 @@ class WakeWordDetector:
         await sm.handle_ptt_press()
 
         # ── Amplitude VAD loop (same logic as _auto_listen_after_speaking) ──
-        SPEECH_THRESHOLD     = 250    # amplitude above = speech
-        SILENCE_AFTER_SPEECH = 1.5    # seconds silence → patient done
+        SPEECH_THRESHOLD     = 150    # amplitude above = speech (lowered for elderly/soft speech)
+        SILENCE_AFTER_SPEECH = 2.0    # seconds silence → patient done (increased for elderly speech pace)
         NO_SPEECH_TIMEOUT    = 8.0    # give up if nobody speaks
         MAX_LISTEN           = 30     # absolute max
         TICK                 = 0.25
 
         speech_detected = False
         silence_start   = None
-        no_speech_start = asyncio.get_event_loop().time()
+        no_speech_start = asyncio.get_running_loop().time()
         elapsed         = 0.0
 
         while elapsed < MAX_LISTEN:
@@ -170,7 +195,7 @@ class WakeWordDetector:
                 return  # Gemini responded or state changed externally
 
             amp = sm.audio_handler.last_amplitude
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
 
             if amp > SPEECH_THRESHOLD:
                 speech_detected = True
@@ -196,8 +221,8 @@ class WakeWordDetector:
         if sm.state == "listening":
             sm.audio_handler.muted = True
             if sm.gemini_client.is_connected:
-                await sm.gemini_client.send_activity_end()  # ← บอก Gemini ว่าพูดจบ
+                await sm.gemini_client.send_activity_end()
             await sm.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": MAX_LISTEN})
             print("🔔 WakeWord: ActivityEnd → รอ Gemini ตอบ...")
             await sm.update_state("thinking")
-            asyncio.get_event_loop().create_task(sm._thinking_timeout_checker())
+            asyncio.create_task(sm._thinking_timeout_checker())

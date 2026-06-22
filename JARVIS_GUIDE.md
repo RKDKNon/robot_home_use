@@ -231,7 +231,7 @@ MIC_DIGITAL_GAIN=1.0           # ปรับ gain ไมค์ (1.0 = ปกต
 
 ```
 Host devpi
-    HostName 192.168.1.53
+    HostName 192.168.1.57
     User socio
     IdentityFile ~/.ssh/id_ed25519_buzz
 ```

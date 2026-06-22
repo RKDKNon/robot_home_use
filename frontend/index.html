@@ -21,6 +21,16 @@
             <div class="test-icon">🔊</div>
         </button>
 
+        <!-- Clear History — below test audio -->
+        <button class="clear-history-btn" id="clear-history-btn" title="ลบประวัติการสนทนา">
+            <div class="clear-icon">🗑️</div>
+        </button>
+
+        <!-- Camera Button — below trash -->
+        <button class="camera-btn" id="camera-btn" title="ถ่ายรูปทันที">
+            <div class="camera-icon">📷</div>
+        </button>
+
         <!-- Main Face Area -->
         <main class="main-display">
 
@@ -46,6 +56,10 @@
 
                         <!-- LEFT EYE -->
                         <div class="eye-wrap" id="eye-left">
+                            <!-- Eyebrow -->
+                            <svg class="eyebrow" id="brow-left" viewBox="0 0 60 20" xmlns="http://www.w3.org/2000/svg">
+                                <path class="brow-path" id="brow-path-left" d="M 4,14 Q 30,8 56,12" />
+                            </svg>
                             <div class="eye-outer-glow"></div>
                             <div class="eye-socket">
                                 <div class="eye-white">
@@ -67,6 +81,10 @@
 
                         <!-- RIGHT EYE -->
                         <div class="eye-wrap" id="eye-right">
+                            <!-- Eyebrow -->
+                            <svg class="eyebrow" id="brow-right" viewBox="0 0 60 20" xmlns="http://www.w3.org/2000/svg">
+                                <path class="brow-path" id="brow-path-right" d="M 4,12 Q 30,8 56,14" />
+                            </svg>
                             <div class="eye-outer-glow"></div>
                             <div class="eye-socket">
                                 <div class="eye-white">
@@ -86,24 +104,27 @@
 
                     </div><!-- /robot-eyes-row -->
 
-                    <!-- Robot Name -->
-                    <div class="robot-name-plate">
-                        <span class="robot-name">JARVIS</span>
-                        <span class="robot-subtitle">AI Health Assistant</span>
+                    <!-- Mouth (replaces name plate) -->
+                    <div class="mouth-area">
+                        <!-- Static mouth shape -->
+                        <svg class="mouth-svg" id="mouth-svg" viewBox="0 0 80 30" xmlns="http://www.w3.org/2000/svg">
+                            <path class="mouth-path" id="mouth-path" d="M 10,15 Q 40,18 70,15" />
+                        </svg>
+                        <!-- Listening bars (shown when LISTENING — replaces mouth) -->
+                        <div class="listen-bars" id="listen-bars">
+                            <span></span><span></span><span></span><span></span><span></span>
+                            <span></span><span></span><span></span><span></span>
+                        </div>
                     </div>
 
                 </div><!-- /robot-head -->
-
-                <!-- Listening wave bars (shown when LISTENING) -->
-                <div class="listen-bars" id="listen-bars">
-                    <span></span><span></span><span></span><span></span><span></span>
-                    <span></span><span></span><span></span><span></span>
-                </div>
 
                 <!-- Tap hint (shown only in idle) -->
                 <div class="face-tap-hint" id="face-tap-hint">แตะเพื่อพูดคุย</div>
 
             </div><!-- /face-stage -->
+
+
 
             <!-- Floating Speech Bubble -->
             <div class="speech-bubble" id="speech-bubble">
@@ -130,14 +151,14 @@
                 <p>กำลังเชื่อมต่อวิดีโอคอลกับแพทย์ประจำตัว...</p>
             </div>
             <div class="video-grid">
-                <div class="video-box patient-view">
+                <!-- Socare Video Call iframe -->
+                <iframe id="socare-video-frame" src=""
+                    style="display:none; width:100%; height:400px; border:none; border-radius:12px;"
+                    allow="camera; microphone; fullscreen" allowfullscreen></iframe>
+                <!-- Fallback mock view -->
+                <div class="video-box patient-view" id="telemed-mock">
                     <div class="video-label">กล้องผู้ป่วย</div>
                     <div class="mock-avatar">👴 Patient</div>
-                </div>
-                <div class="video-box doctor-view">
-                    <div class="video-label">แพทย์ผู้ให้บริการ</div>
-                    <div class="mock-avatar doctor-calling">👩‍⚕️ Doctor (Connecting)</div>
-                    <div class="connection-spinner"></div>
                 </div>
             </div>
             <div class="telemed-footer">

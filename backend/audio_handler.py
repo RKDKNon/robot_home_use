@@ -7,18 +7,19 @@ import sounddevice as sd
 
 class AudioHandler:
     def __init__(self, loop=None):
-        self.loop = loop or asyncio.get_event_loop()
+        self.loop = loop or asyncio.get_event_loop()  # Will be overridden by start() with running loop
         # Queue for captured mic audio (asyncio.Queue for backend to consume)
         self.input_queue = asyncio.Queue()
         # Queue for speaker audio (std queue.Queue for playback thread to consume)
         self.output_queue = queue.Queue()
-        
+
         self.input_stream = None
         self.output_stream = None
-        
+        self._output_stream_lock = threading.Lock()  # Protect stream stop/start during barge-in
+
         self.play_thread = None
         self.is_playing = False
-        
+
         # Audio formats
         self.gemini_audio_rate = 24000  # Gemini Live returns 24kHz
         self.output_sample_rate = 44100 # Pi Headphones native rate (device 2)
@@ -33,14 +34,30 @@ class AudioHandler:
         self.output_device = int(_out_env) if _out_env.lstrip('-').isdigit() else None
         _in_env = os.getenv("AUDIO_INPUT_DEVICE", "")
         self.input_device = int(_in_env) if _in_env.strip().isdigit() else None
-        
+
         # Flags
         self.recording = False
         self.muted = False
         self.last_amplitude = 0  # Updated every chunk for VAD
-        
+
         # Callback for state change: def cb(is_playing: bool)
         self.on_playback_state_change = None
+
+        # Shared mic consumers — other modules (e.g. wake word) can register
+        # a callback(bytes) to receive raw mic audio without opening a second stream.
+        # This prevents device conflicts on Raspberry Pi.
+        self._mic_consumers = []  # list of callable(data_bytes)
+
+    def register_mic_consumer(self, callback):
+        """Register a callback(bytes) to receive raw mic audio chunks."""
+        self._mic_consumers.append(callback)
+
+    def unregister_mic_consumer(self, callback):
+        """Remove a previously registered mic consumer."""
+        try:
+            self._mic_consumers.remove(callback)
+        except ValueError:
+            pass
 
     def start(self):
         """Starts both recording and playback streams."""
@@ -58,8 +75,20 @@ class AudioHandler:
         """Callback from sounddevice when microphone data is ready."""
         if status:
             print(f"Audio Input Warning: {status}")
-        if self.recording and not self.muted:
-            data_bytes = bytes(indata)
+        if not self.recording:
+            return
+
+        data_bytes = bytes(indata)
+
+        # Always dispatch to shared mic consumers (wake word, etc.)
+        # even when muted — they need continuous audio for keyword spotting.
+        for consumer in self._mic_consumers:
+            try:
+                consumer(data_bytes)
+            except Exception as e:
+                print(f"Mic consumer error: {e}")
+
+        if not self.muted:
             audio_data = np.frombuffer(data_bytes, dtype=np.int16)
             max_val = int(np.max(np.abs(audio_data)))
             self.last_amplitude = max_val  # Expose for VAD
@@ -154,7 +183,8 @@ class AudioHandler:
                 
                 if self.output_stream:
                     try:
-                        self.output_stream.write(chunk)
+                        with self._output_stream_lock:
+                            self.output_stream.write(chunk)
                     except Exception as e:
                         print(f"Error writing audio to speaker: {e}")
                 self.output_queue.task_done()
@@ -163,8 +193,9 @@ class AudioHandler:
             except queue.Empty:
                 if was_playing:
                     empty_count += 1
-                    # 10 timeouts of 0.05s is 0.5s of silence, indicating playback finished
-                    if empty_count >= 10:
+                    # 50 timeouts of 0.05s is 2.5s of silence, indicating playback finished
+                    # (Gemini may have network jitter > 500ms, so we wait longer)
+                    if empty_count >= 50:
                         was_playing = False
                         if self.on_playback_state_change:
                             self.loop.call_soon_threadsafe(self.on_playback_state_change, False)
@@ -226,8 +257,9 @@ class AudioHandler:
         # Re-start output stream to flush internal hardware buffers
         if self.output_stream:
             try:
-                self.output_stream.stop()
-                self.output_stream.start()
+                with self._output_stream_lock:
+                    self.output_stream.stop()
+                    self.output_stream.start()
             except Exception as e:
                 print(f"Error resetting speaker stream: {e}")
 

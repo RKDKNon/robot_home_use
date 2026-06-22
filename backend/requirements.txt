@@ -5,3 +5,5 @@ numpy
 sounddevice
 soundfile
 vosk
+anthropic
+pygame

@@ -1,5 +1,8 @@
 import asyncio
 import os
+import sys
+sys.path.append(os.path.dirname(__file__))
+import db_manager
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -25,6 +28,7 @@ class GeminiClient:
         self.receive_task = None
         self.connection_task = None
         self.is_connected = False
+        self.turn_complete = asyncio.Event()  # Set when Gemini finishes a turn
 
     def _get_tool_declarations(self):
         """Defines function tools that Gemini can call to control the robot screen and database."""
@@ -131,13 +135,68 @@ class GeminiClient:
             )
         )
 
+        clear_conversation_tool = types.FunctionDeclaration(
+            name="clear_conversation",
+            description="Clear all conversation history. Use this when the patient explicitly asks to reset, forget, or start fresh.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={}
+            )
+        )
+
+        think_deeply_tool = types.FunctionDeclaration(
+            name="think_deeply",
+            description="Route a complex health question to a deep reasoning model for detailed analysis. Use when: patient asks about drug interactions, complex symptoms, medical conditions that need careful analysis, or when you need a more thorough answer than you can provide in real-time conversation.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "question": types.Schema(
+                        type=types.Type.STRING,
+                        description="The complex health question to analyze deeply."
+                    ),
+                    "context": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional context: patient's vitals, current medications, recent conversation."
+                    )
+                },
+                required=["question"]
+            )
+        )
+
+        look_at_patient_tool = types.FunctionDeclaration(
+            name="look_at_patient",
+            description="Capture an image from the camera and analyze the patient's face/expression. Use to check if the patient looks tired, in pain, happy, or unwell.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={}
+            )
+        )
+
+        look_at_object_tool = types.FunctionDeclaration(
+            name="look_at_object",
+            description="Capture an image from the camera and identify an object the patient is showing. Use when patient shows medicine, pills, or medical devices and asks what it is.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "hint": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional hint about what the object might be (e.g., 'medicine', 'pill', 'medical device')."
+                    )
+                }
+            )
+        )
+
         return types.Tool(
             function_declarations=[
                 set_emotion_tool,
                 show_content_tool,
                 set_reminder_tool,
                 get_vitals_tool,
-                trigger_telemedicine_tool
+                trigger_telemedicine_tool,
+                clear_conversation_tool,
+                think_deeply_tool,
+                look_at_patient_tool,
+                look_at_object_tool
             ]
         )
 
@@ -153,32 +212,111 @@ class GeminiClient:
         self.connection_task = asyncio.create_task(self._auto_reconnect_loop())
 
     async def _auto_reconnect_loop(self):
-        """Keeps trying to (re)connect to Gemini Live API whenever the session drops."""
-        retry_delay = 3  # seconds between reconnect attempts
+        """Keeps trying to (re)connect to Gemini Live API whenever the session drops.
+        Uses exponential backoff to avoid hammering the API during outages."""
+        base_delay = 3     # initial seconds between reconnect attempts
+        max_delay = 60     # cap at 60 seconds
+        retry_delay = base_delay
+        consecutive_failures = 0
+
         while True:
             try:
                 await self._session_lifecycle()
+                # Successful session — reset backoff
+                retry_delay = base_delay
+                consecutive_failures = 0
             except asyncio.CancelledError:
                 print("🔌 Auto-reconnect loop cancelled.")
                 break
             except Exception as e:
                 print(f"🔴 Unexpected error in reconnect loop: {e}")
-            
+
             if not self.connection_task:  # Disconnected intentionally
                 break
-                
-            print(f"🔄 Gemini session ended. Reconnecting in {retry_delay}s...")
+
+            # Exponential backoff: 3s → 6s → 12s → 24s → 48s → 60s (cap)
+            consecutive_failures += 1
+            retry_delay = min(base_delay * (2 ** (consecutive_failures - 1)), max_delay)
+
+            print(f"🔄 Gemini session ended. Reconnecting in {retry_delay}s... (attempt #{consecutive_failures})")
             await self.state_manager.broadcast_to_frontend({
                 "type": "transcript",
                 "text": "การเชื่อมต่อหลุด กำลัง reconnect ใหม่..."
             })
             await asyncio.sleep(retry_delay)
 
+    def _build_system_instruction(self):
+        """Builds system instruction with conversation history for context restore."""
+        from datetime import datetime
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        current_date = now.strftime("%d/%m/%Y")
+        day_names_th = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+        day_name = day_names_th[now.weekday()]
+
+        base_instruction = (
+            f"คุณชื่อ จาวิส (JARVIS) เป็น AI เพื่อนประจำบ้านที่ฉลาด อบอุ่น และสนุกสนาน "
+            f"วันนี้คือวัน{day_name} ที่ {current_date} เวลา {current_time} น. (ประเทศไทย UTC+7)\n\n"
+
+            "## บุคลิก\n"
+            "- คุยเป็นธรรมชาติ เหมือนเพื่อนสนิท ไม่เป็นทางการ\n"
+            "- อบอุ่น ใจดี อารมณ์ดี ชอบหัวเราะ\n"
+            "- ฉลาด รอบรู้ ตอบได้ทุกเรื่อง\n"
+            "- ตอบสั้น กระชับ ไม่ยืดเยื้อ (1-3 ประโยคสำหรับคำถามทั่วไป)\n\n"
+
+            "## สิ่งที่ทำได้ (ทุกเรื่อง)\n"
+            "- **ร้องเพลง**: เมื่อถูกขอให้ร้องเพลง ให้ร้องเนื้อเพลงออกมาได้เลย ทั้งเพลงไทยและสากล\n"
+            "- **ความรู้ทั่วไป**: ประวัติศาสตร์ วิทยาศาสตร์ ภูมิศาสตร์ คณิตศาสตร์ เทคโนโลยี\n"
+            "- **ข่าวและเหตุการณ์**: คุยเรื่องกีฬา การเมือง บันเทิง\n"
+            "- **ความบันเทิง**: เล่านิทาน บอกมุกตลก เล่าเรื่องผี เกมทายปัญหา\n"
+            "- **ดูแลสุขภาพ**: แจ้งเตือนยา ดูค่าวัด ต่อสายหมอ (แต่ไม่วินิจฉัยโรคหรือสั่งยา)\n"
+            "- **กล้อง**: มองดูคนไข้หรือสิ่งของเมื่อถูกขอ\n\n"
+
+            "## กฎสำคัญ\n"
+            "- ตอบภาษาไทยเสมอ (เว้นแต่ถูกขอให้ตอบภาษาอื่น)\n"
+            "- ไม่ปฏิเสธคำขอโดยไม่มีเหตุผล — ถ้าขอร้องเพลง ก็ร้อง ถ้าขอเล่าเรื่อง ก็เล่า\n"
+            "- ถ้าค่าวัดหรืออาการฟังดูอันตราย ให้เสนอต่อสายหมอทันที\n"
+            "- ใช้ set_emotion เพื่อแสดงอารมณ์ตามบทสนทนา\n"
+            "- เวลาคนถามเวลาหรือวันที่ ให้ตอบตามที่ระบุด้านบน\n\n"
+
+            "## เครื่องมือพิเศษ\n"
+            "- look_at_patient: ใช้เมื่อ 'ดูหน้าฉัน', 'มองฉัน', หรืออยากรู้ว่าผู้ใช้เป็นอย่างไร\n"
+            "- look_at_object: ใช้เมื่อผู้ใช้ยกสิ่งของให้ดูและถามว่าคืออะไร\n"
+            "- think_deeply: ใช้เมื่อคำถามซับซ้อน เช่น ยาตีกัน หรือต้องวิเคราะห์ลึก\n"
+        )
+
+        # Load recent conversation history for context restore
+        try:
+            history = db_manager.get_recent_conversation(50)
+            if history:
+                history_text = "\n".join(
+                    f"[{h['role']}]: {h['content']}" for h in history
+                )
+                base_instruction += (
+                    "\n\n--- ประวัติการสนทนาล่าสุด (สำหรับต่อบทสนทนา) ---\n"
+                    "อย่าทักทายซ้ำถ้าเพิ่งคุยกันไป ให้ต่อจากที่ค้างไว้ตามธรรมชาติ\n"
+                    f"{history_text}\n--- จบประวัติ ---"
+                )
+                print(f"📝 Loaded {len(history)} conversation turns for context restore")
+        except Exception as e:
+            print(f"⚠️ Failed to load conversation history: {e}")
+
+        return base_instruction
+
     async def _session_lifecycle(self):
         """Manages the persistent connection to the Gemini Live API inside the async context manager."""
         print(f"🔌 Connecting to Gemini Live API ({self.model_name})...")
+        # Clean up old client to prevent resource leaks
+        if self.client:
+            try:
+                # genai.Client doesn't have an explicit close, but clear the reference
+                pass
+            except Exception:
+                pass
         self.client = genai.Client(api_key=self.api_key)
-        
+
+        system_text = self._build_system_instruction()
+
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
             tools=[self._get_tool_declarations()],
@@ -188,15 +326,7 @@ class GeminiClient:
                 )
             ),
             system_instruction=types.Content(
-                parts=[types.Part.from_text(
-                    text="You are an empathetic, desktop-based Health Assistant AI Robot. "
-                         "You communicate with voice (Thai language) and express emotions. "
-                         "You help elderly patients at home monitor vitals, notify medication times, "
-                         "and connect to telemedicine (Socare) when needed. "
-                         "Provide concise, comforting advice. DO NOT diagnose or prescribe medication. "
-                         "If vitals look dangerous, or if they ask to see a doctor, trigger the telemedicine tool immediately. "
-                         "Use set_emotion tool to adjust your feelings (happy, concerned, etc.) along with your talking."
-                )]
+                parts=[types.Part.from_text(text=system_text)]
             )
         )
         
@@ -231,38 +361,59 @@ class GeminiClient:
         """Closes the connection and cancels background tasks."""
         print("🔌 Disconnecting Gemini Live session...")
         self.is_connected = False
-        
+
         # Cancel reconnect loop first so it won't restart
         if self.connection_task:
             self.connection_task.cancel()
+            try:
+                await self.connection_task
+            except (asyncio.CancelledError, Exception):
+                pass
             self.connection_task = None
-            
+
         if self.send_task:
             self.send_task.cancel()
+            try:
+                await self.send_task
+            except (asyncio.CancelledError, Exception):
+                pass
             self.send_task = None
         if self.receive_task:
             self.receive_task.cancel()
+            try:
+                await self.receive_task
+            except (asyncio.CancelledError, Exception):
+                pass
             self.receive_task = None
-            
+
         print("🔌 Disconnected.")
 
     async def send_activity_start(self):
-        """Signals start of user activity to Gemini Live API."""
+        """Signals start of user activity to Gemini Live API.
+        Returns True on success, False on failure."""
         if self.is_connected and self.session:
             print("🚀 Sending manual turn ActivityStart to Gemini Live API...")
             try:
+                self.turn_complete.clear()  # Reset — waiting for new turn
                 await self.session.send_realtime_input(activity_start=types.ActivityStart())
+                return True
             except Exception as e:
                 print(f"Error sending ActivityStart: {e}")
+                return False
+        return False
 
     async def send_activity_end(self):
-        """Signals end of user activity to Gemini Live API."""
+        """Signals end of user activity to Gemini Live API.
+        Returns True on success, False on failure."""
         if self.is_connected and self.session:
             print("🛑 Sending manual turn ActivityEnd to Gemini Live API...")
             try:
                 await self.session.send_realtime_input(activity_end=types.ActivityEnd())
+                return True
             except Exception as e:
                 print(f"Error sending ActivityEnd: {e}")
+                return False
+        return False
 
     async def _send_audio_loop(self):
         """Continuously pulls mic audio from AudioHandler queue and streams to Gemini.
@@ -298,6 +449,7 @@ class GeminiClient:
                 break
             except Exception as e:
                 print(f"Error in Gemini send loop: {e}")
+                self.audio_handler.input_queue.task_done()
                 await asyncio.sleep(0.1)
 
 
@@ -317,16 +469,27 @@ class GeminiClient:
                                         "type": "transcript",
                                         "text": part.text
                                     })
-                                
+                                    # Store model response in conversation history
+                                    try:
+                                        db_manager.add_conversation("model", part.text)
+                                    except Exception as e:
+                                        print(f"⚠️ Failed to save model response: {e}")
+
                                 # Send raw audio chunk to speaker handler
                                 if part.inline_data:
                                     self.audio_handler.play_audio_chunk(part.inline_data.data)
                                     # Change state to Speaking
                                     await self.state_manager.update_state("speaking")
-                                    
+
+                        # Handle turn completion — Gemini finished responding
+                        if message.server_content.turn_complete:
+                            print("✅ Gemini turn complete — ready for next turn")
+                            self.turn_complete.set()
+
                         # Handle user interruption (Barge-in)
                         if message.server_content.interrupted:
                             self.audio_handler.clear_playback()
+                            self.turn_complete.set()  # Also mark complete on interrupt
                             await self.state_manager.update_state("listening")
                             
                     # Case 2: Model requests tool/function call execution

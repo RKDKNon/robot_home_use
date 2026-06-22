@@ -9,40 +9,41 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  /* Colors */
-  --bg-deep:    #050b18;
-  --bg-card:    #0d1628;
-  --bg-card2:   #111d35;
-  --border:     rgba(0, 200, 255, 0.12);
-  --text-main:  #e2e8f0;
-  --text-dim:   #6b7280;
+  /* ── Hospital Blue Theme — Safe, Trustworthy, Medical ── */
+  --bg-deep:    #0b1f36;          /* Deep hospital navy */
+  --bg-card:    #102d4a;          /* Medical panel */
+  --bg-card2:   #133458;
+  --border:     rgba(30, 144, 255, 0.16);
+  --text-main:  #e8f4fd;          /* Soft white-blue (like hospital light) */
+  --text-dim:   #5d8aaa;
 
-  /* Eye iris colors per state */
-  --iris-idle:      #1a6ef5;
-  --iris-listen:    #00d4ff;
-  --iris-think:     #a855f7;
-  --iris-speak:     #10b981;
-  --iris-happy:     #f59e0b;
-  --iris-concerned: #ef4444;
-  --iris-sad:       #60a5fa;
-  --iris-sleepy:    #374151;
+  /* ── Iris — Medical Equipment Colors ── */
+  --iris-idle:      #1e90ff;      /* Dodger blue — safe, medical */
+  --iris-listen:    #00c8d7;      /* Medical teal — attentive */
+  --iris-think:     #5c7cfa;      /* Indigo blue — cognitive */
+  --iris-speak:     #29b6f6;      /* Sky blue — communicating */
+  --iris-happy:     #66bb6a;      /* Soft hospital green — good news */
+  --iris-concerned: #ef9a9a;      /* Soft coral — gentle alert */
+  --iris-sad:       #78909c;      /* Blue-grey — subdued */
+  --iris-sleepy:    #37474f;      /* Dark slate — offline */
 
-  /* Glow colors */
-  --glow-idle:      rgba(26, 110, 245, 0.35);
-  --glow-listen:    rgba(0, 212, 255, 0.55);
-  --glow-think:     rgba(168, 85, 247, 0.45);
-  --glow-speak:     rgba(16, 185, 129, 0.5);
-  --glow-happy:     rgba(245, 158, 11, 0.55);
-  --glow-concerned: rgba(239, 68, 68, 0.55);
+  /* ── Glows — Soft, Not Harsh ── */
+  --glow-idle:      rgba(30, 144, 255, 0.30);
+  --glow-listen:    rgba(0, 200, 215, 0.35);
+  --glow-think:     rgba(92, 124, 250, 0.28);
+  --glow-speak:     rgba(41, 182, 246, 0.32);
+  --glow-happy:     rgba(102, 187, 106, 0.35);
+  --glow-concerned: rgba(239, 154, 154, 0.35);
 
-  /* Active iris state (changed by JS) */
+  /* Active iris state (set by JS) */
   --iris-current:   var(--iris-idle);
   --glow-current:   var(--glow-idle);
 
-  /* Sizing — optimized for 800×480 Pi touchscreen */
-  --eye-size:       118px;
-  --eye-gap:        34px;
+  /* Sizing — 800×480 Pi touchscreen */
+  --eye-size:       145px;
+  --eye-gap:        46px;
 }
+
 
 html, body {
   height: 100%;
@@ -304,23 +305,23 @@ html, body {
 .eyelid-bottom { bottom: 0; height: 0; border-radius: 50% 50% 0 0; }
 
 /* =====================================================
-   ROBOT NAME PLATE
+   ROBOT NAME PLATE (below face)
    ===================================================== */
 .robot-name-plate {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .robot-name {
   font-family: 'Outfit', sans-serif;
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 800;
   letter-spacing: 8px;
   color: var(--iris-current, var(--iris-idle));
-  text-shadow: 0 0 24px var(--glow-current, var(--glow-idle));
+  text-shadow: 0 0 20px var(--glow-current, var(--glow-idle));
   transition: color 0.5s ease, text-shadow 0.5s ease;
 }
 
@@ -333,43 +334,119 @@ html, body {
 }
 
 /* =====================================================
-   LISTENING WAVE BARS
+   EYEBROWS
+   ===================================================== */
+.eyebrow {
+  position: absolute;
+  top: -26px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 64px;
+  height: 20px;
+  overflow: visible;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.brow-path {
+  fill: none;
+  stroke: var(--iris-idle);
+  stroke-width: 4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px var(--glow-idle));
+  transition: d 0.4s cubic-bezier(0.34,1.56,0.64,1),
+              stroke 0.4s ease,
+              filter 0.4s ease;
+}
+
+/* =====================================================
+   MOUTH SVG
+
+   ===================================================== */
+.mouth-svg {
+  width: 72px;
+  height: 28px;
+  margin-top: 6px;
+  overflow: visible;
+}
+
+.mouth-path {
+  fill: none;
+  stroke: var(--iris-idle);
+  stroke-width: 4.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 5px var(--glow-idle));
+  transition: d 0.35s cubic-bezier(0.34,1.56,0.64,1), stroke 0.4s ease, filter 0.4s ease;
+}
+
+/* =====================================================
+   MOUTH AREA — contains both SVG mouth + listen bars
+   ===================================================== */
+.mouth-area {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  width: 110px;
+  margin-top: 6px;
+}
+
+/* Mouth SVG — shown by default, hidden when listening */
+.mouth-svg {
+  position: absolute;
+  width: 100px;
+  height: 36px;
+  overflow: visible;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+/* Hide mouth shape when LISTENING */
+.state-listening .mouth-svg { opacity: 0; }
+
+/* =====================================================
+   LISTENING BARS (as mouth)
    ===================================================== */
 .listen-bars {
+  position: absolute;
   display: flex;
   align-items: center;
   gap: 4px;
   height: 28px;
   opacity: 0;
-  transition: opacity 0.4s ease;
-  margin-top: 2px;
+  transition: opacity 0.25s ease;
 }
+
 .listen-bars span {
   display: block;
-  width: 3px;
+  width: 4.5px;
   border-radius: 4px;
-  background: var(--iris-current, var(--iris-listen));
-  height: 6px;
-  animation: wave-bar 0.8s ease-in-out infinite;
+  background: var(--iris-listen);
+  box-shadow: 0 0 5px var(--glow-listen);
+  height: 5px;
+  animation: wave-bar 0.75s ease-in-out infinite;
 }
-.listen-bars span:nth-child(1) { animation-delay: 0.0s; }
-.listen-bars span:nth-child(2) { animation-delay: 0.1s; }
-.listen-bars span:nth-child(3) { animation-delay: 0.2s; }
-.listen-bars span:nth-child(4) { animation-delay: 0.3s; }
-.listen-bars span:nth-child(5) { animation-delay: 0.4s; }
-.listen-bars span:nth-child(6) { animation-delay: 0.3s; }
-.listen-bars span:nth-child(7) { animation-delay: 0.2s; }
-.listen-bars span:nth-child(8) { animation-delay: 0.1s; }
-.listen-bars span:nth-child(9) { animation-delay: 0.0s; }
+
+/* Pseudo-random delays + speeds — looks like real audio, not a pattern */
+.listen-bars span:nth-child(1) { animation-delay: 0.10s; animation-duration: 0.70s; }
+.listen-bars span:nth-child(2) { animation-delay: 0.32s; animation-duration: 0.55s; }
+.listen-bars span:nth-child(3) { animation-delay: 0.05s; animation-duration: 0.80s; }
+.listen-bars span:nth-child(4) { animation-delay: 0.45s; animation-duration: 0.60s; }
+.listen-bars span:nth-child(5) { animation-delay: 0.18s; animation-duration: 0.72s; }
+.listen-bars span:nth-child(6) { animation-delay: 0.38s; animation-duration: 0.50s; }
+.listen-bars span:nth-child(7) { animation-delay: 0.00s; animation-duration: 0.65s; }
+.listen-bars span:nth-child(8) { animation-delay: 0.25s; animation-duration: 0.85s; }
+.listen-bars span:nth-child(9) { animation-delay: 0.52s; animation-duration: 0.58s; }
 
 @keyframes wave-bar {
-  0%, 100% { height: 6px; }
-  50%       { height: 24px; }
+  0%, 100% { height: 5px;  opacity: 0.55; }
+  50%       { height: 26px; opacity: 1;   }
 }
 
-/* Show bars when listening or speaking */
-.state-listening  .listen-bars,
-.state-speaking   .listen-bars { opacity: 1; }
+/* Show bars only when LISTENING */
+.state-listening .listen-bars { opacity: 1; }
+
 
 /* =====================================================
    STATE-SPECIFIC EFFECTS on face-stage
@@ -669,6 +746,79 @@ html, body {
 .test-audio-btn:hover  { background: rgba(30, 50, 80, 0.9); transform: scale(1.1); }
 .test-audio-btn:active { transform: scale(0.95); }
 .test-icon { font-size: 18px; line-height: 1; }
+
+.clear-history-btn {
+  position: fixed;
+  top: 72px;
+  left: 18px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(10, 18, 40, 0.8);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, transform 0.15s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.clear-history-btn:hover  { background: rgba(80, 30, 30, 0.9); transform: scale(1.1); }
+.clear-history-btn:active { transform: scale(0.95); }
+.clear-icon { font-size: 18px; line-height: 1; }
+
+.camera-btn {
+  position: fixed;
+  top: 126px;
+  left: 18px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(10, 18, 40, 0.8);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, transform 0.15s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.camera-btn:hover  { background: rgba(0, 60, 90, 0.9); transform: scale(1.1); }
+.camera-btn:active { transform: scale(0.95); }
+.camera-icon { font-size: 18px; line-height: 1; }
+
+.camera-status {
+  position: fixed;
+  top: 72px;
+  right: 18px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(10, 18, 40, 0.8);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  backdrop-filter: blur(12px);
+  border-radius: 20px;
+  padding: 4px 10px 4px 8px;
+  font-size: 11px;
+  color: #ef4444;
+  font-family: 'Sarabun', sans-serif;
+}
+.camera-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: camera-pulse 1.5s ease-in-out infinite;
+}
+@keyframes camera-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
 /* Spacer for visual balance */
 .spacer-btn {
