@@ -1,79 +1,74 @@
 // =====================================================
 // JARVIS Robot Face — Animation Engine + WebSocket
+// v2.0 — Natural Conversation + Full Animation
 // =====================================================
 
 // ---- State Definitions — every state tells a story through the eyes ----
 const FACE_STATES = {
   idle: {
-    // Calm, resting — eyes forward, relaxed
     irisVar: '--iris-idle', glowVar: '--glow-idle',
     eyelidTop: 0, eyelidBot: 0, pupilScale: 1.0,
-    lookX: 0, lookY: 0, label: 'STANDBY'
+    lookX: 0, lookY: 0, label: 'STANDBY',
+    headTilt: 0, headNod: 0
   },
   listening: {
-    // WIDE OPEN — dilated pupils, full attention
-    // "ฉันกำลังฟังคุณอยู่ ไม่พลาดทุกคำ"
     irisVar: '--iris-listen', glowVar: '--glow-listen',
     eyelidTop: 0, eyelidBot: 0, pupilScale: 1.28,
-    lookX: 0, lookY: -5, label: 'LISTENING'
+    lookX: 0, lookY: -5, label: 'LISTENING',
+    headTilt: 3, headNod: -2   // slight right tilt = attentive
   },
   thinking: {
-    // SQUINTING — contracted pupils, concentration, scanning memory
-    // "กำลังค้นหาคำตอบ..."
     irisVar: '--iris-think', glowVar: '--glow-think',
-    eyelidTop: 30, eyelidBot: 0, pupilScale: 0.65,
-    lookX: -20, lookY: -20, label: 'THINKING'
+    eyelidTop: 12, eyelidBot: 0, pupilScale: 0.95,
+    lookX: -10, lookY: -10, label: 'THINKING',
+    headTilt: -4, headNod: -3  // left tilt = thinking
   },
   speaking: {
-    // Engaged eye contact — pupils normal, slight focus
-    // "ฉันกำลังบอกคุณ"
     irisVar: '--iris-speak', glowVar: '--glow-speak',
     eyelidTop: 4, eyelidBot: 0, pupilScale: 1.08,
-    lookX: 0, lookY: 0, label: 'SPEAKING'
+    lookX: 0, lookY: 0, label: 'SPEAKING',
+    headTilt: 0, headNod: 0
   },
   happy: {
-    // FULL EYE SMILE — both lids squint (Duchenne smile)
-    // "ยิ้มถึงตา ความสุขจริงๆ"
     irisVar: '--iris-happy', glowVar: '--glow-happy',
     eyelidTop: 42, eyelidBot: 36, pupilScale: 1.18,
-    lookX: 0, lookY: 7, label: 'HAPPY'
+    lookX: 0, lookY: 7, label: 'HAPPY',
+    headTilt: 5, headNod: 4   // happy head bob
   },
   concerned: {
-    // Furrowed brow, pupils looking slightly down
-    // "เป็นห่วงคุณ"
     irisVar: '--iris-concerned', glowVar: '--glow-concerned',
     eyelidTop: 24, eyelidBot: 0, pupilScale: 0.88,
-    lookX: 0, lookY: 16, label: 'CONCERNED'
+    lookX: 0, lookY: 16, label: 'CONCERNED',
+    headTilt: -2, headNod: 2
   },
   sad: {
-    // Heavy drooped eyelids, pupils far down — genuine sadness
-    // "รู้สึกเศร้า"
     irisVar: '--iris-sad', glowVar: '--glow-idle',
     eyelidTop: 45, eyelidBot: 0, pupilScale: 0.82,
-    lookX: -6, lookY: 22, label: 'SAD'
+    lookX: -6, lookY: 22, label: 'SAD',
+    headTilt: -3, headNod: 6
   },
   surprised: {
-    // EYES SNAP WIDE — max dilation, pupils shoot up
-    // "ตกใจ! ไม่คาดคิด!"
     irisVar: '--iris-happy', glowVar: '--glow-happy',
     eyelidTop: 0, eyelidBot: 0, pupilScale: 1.45,
-    lookX: 0, lookY: -9, label: 'SURPRISED'
+    lookX: 0, lookY: -9, label: 'SURPRISED',
+    headTilt: 0, headNod: -5  // slight jerk back
   },
   neutral: {
     irisVar: '--iris-idle', glowVar: '--glow-idle',
     eyelidTop: 0, eyelidBot: 0, pupilScale: 1.0,
-    lookX: 0, lookY: 0, label: 'STANDBY'
+    lookX: 0, lookY: 0, label: 'STANDBY',
+    headTilt: 0, headNod: 0
   },
   sleepy: {
-    // Half-closed — low energy / offline
     irisVar: '--iris-sleepy', glowVar: '--glow-idle',
     eyelidTop: 58, eyelidBot: 8, pupilScale: 0.7,
-    lookX: 0, lookY: 10, label: 'OFFLINE'
+    lookX: 0, lookY: 10, label: 'OFFLINE',
+    headTilt: 0, headNod: 8  // drooping head
   }
 };
 
 // =====================================================
-// RobotFace Class — Manages animated eyes
+// RobotFace Class — Animated eyes + head + mouth
 // =====================================================
 class RobotFace {
   constructor() {
@@ -89,7 +84,8 @@ class RobotFace {
     this.stateBadge = document.getElementById('state-badge');
     this.robotName  = document.querySelector('.robot-name');
 
-    // Mouth + Eyebrow elements
+    // Head + mouth
+    this.robotHead = document.querySelector('.robot-head');
     this.mouthPath = document.getElementById('mouth-path');
     this.browL     = document.getElementById('brow-path-left');
     this.browR     = document.getElementById('brow-path-right');
@@ -100,10 +96,20 @@ class RobotFace {
     this._thinkTimer   = null;
     this._speakTimer   = null;
     this._mouthTimer   = null;
+    this._headTimer    = null;
 
     // Eye size for clamping pupil movement
     this._eyeSize = 140;
     this._maxMove = this._eyeSize * 0.18;
+
+    // Lip sync state
+    this._lastAudioAmp  = 0;    // smoothed Gemini audio amplitude (0-100)
+    this._lastMicAmp    = 0;    // smoothed mic amplitude (0-100)
+    this._lipSyncTimer  = null;
+
+    // Head tilt state
+    this._headTiltCurrent = 0;
+    this._headNodCurrent  = 0;
 
     this._startIdleAnimations();
   }
@@ -113,16 +119,13 @@ class RobotFace {
     const cfg = FACE_STATES[emotion] || FACE_STATES.idle;
     this.currentEmotion = emotion;
 
-    // Resolve CSS variable values
     const style = getComputedStyle(document.documentElement);
     const irisColor = style.getPropertyValue(cfg.irisVar).trim() || '#1a6ef5';
     const glowColor = style.getPropertyValue(cfg.glowVar).trim() || 'rgba(26,110,245,0.35)';
 
-    // Update CSS custom properties (drives ambient rings, state badge, name glow)
     document.documentElement.style.setProperty('--iris-current', `var(${cfg.irisVar})`);
     document.documentElement.style.setProperty('--glow-current', `var(${cfg.glowVar})`);
 
-    // Update iris gradient
     [this.irisL, this.irisR].forEach(el => {
       if (!el) return;
       el.style.background = `radial-gradient(circle at 35% 35%,
@@ -131,16 +134,10 @@ class RobotFace {
         color-mix(in srgb, ${irisColor} 55%, black) 100%)`;
     });
 
-    // Update eyelids
     this._setEyelids(cfg.eyelidTop, cfg.eyelidBot);
-
-    // Update pupil size
     this._setPupilScale(cfg.pupilScale);
-
-    // Move pupils to state default position
     this._movePupils(cfg.lookX, cfg.lookY, true);
 
-    // Update state badge
     if (this.stateBadge) {
       this.stateBadge.innerText = cfg.label;
       this.stateBadge.style.color = irisColor;
@@ -151,13 +148,12 @@ class RobotFace {
       this.robotName.style.textShadow = `0 0 30px ${glowColor}`;
     }
 
-    // Update mouth shape for this emotion
     this._setMouthForEmotion(emotion, irisColor, glowColor);
-
-    // Update eyebrows for this emotion
     this._setEyebrowsForEmotion(emotion, irisColor, glowColor);
 
-    // Stop all state animations then start the right one
+    // Animate head tilt to target position
+    this._animateHeadTilt(cfg.headTilt, cfg.headNod);
+
     this._stopAnimations();
     if (emotion === 'idle' || emotion === 'neutral') {
       this._startIdleAnimations();
@@ -170,73 +166,164 @@ class RobotFace {
     }
   }
 
-  // ---- Mouth shapes per emotion ----
-  _setMouthForEmotion(emotion, irisColor, glowColor) {
-    // SVG paths — viewBox 0 0 80 30, center = 40,15
-    const shapes = {
-      idle:      'M 15,16 Q 40,20 65,16',    // Relaxed slight smile
-      neutral:   'M 15,16 Q 40,20 65,16',
-      listening: 'M 12,14 Q 40,23 68,14',    // Open/attentive
-      thinking:  'M 18,20 Q 40,12 62,20',    // Tight frown — concentrating
-      speaking:  'M 12,15 Q 40,23 68,15',    // Lightly open (resting speak)
-      happy:     'M 8,9  Q 40,32 72,9',      // Big genuine smile
-      concerned: 'M 16,22 Q 40,11 64,22',    // Clear frown — worried
-      sad:       'M 12,25 Q 40,7  68,25',    // Deep sad frown
-      surprised: 'M 33,9  Q 40,28 47,9',     // Small oval — open O
-      sleepy:    'M 22,16 Q 40,17 58,16',    // Almost flat — low energy
+  // ---- Head tilt/nod animation ----
+  _animateHeadTilt(targetTilt, targetNod) {
+    if (!this.robotHead) return;
+    const duration = 400; // ms
+    const startTilt = this._headTiltCurrent;
+    const startNod  = this._headNodCurrent;
+    const startTime = performance.now();
+
+    const animate = (now) => {
+      const elapsed = now - startTime;
+      const t = Math.min(elapsed / duration, 1);
+      // Ease out cubic
+      const ease = 1 - Math.pow(1 - t, 3);
+
+      const tilt = startTilt + (targetTilt - startTilt) * ease;
+      const nod  = startNod  + (targetNod  - startNod)  * ease;
+
+      this._headTiltCurrent = tilt;
+      this._headNodCurrent  = nod;
+      this._applyHeadTransform(tilt, nod);
+
+      if (t < 1) requestAnimationFrame(animate);
     };
-    const d = shapes[emotion] || shapes.idle;
-    this._setMouth(d, irisColor, glowColor);
+    requestAnimationFrame(animate);
   }
 
-  // ---- Set mouth SVG path + color ----
+  _applyHeadTransform(tilt, nod, extraScale = 1) {
+    if (!this.robotHead) return;
+    this.robotHead.style.transform =
+      `rotate(${tilt}deg) translateY(${nod}px) scale(${extraScale})`;
+  }
+
+  // ---- Wake word flash: quick scale pop ----
+  wakeWordFlash() {
+    if (!this.robotHead) return;
+    let t = 0;
+    const animate = () => {
+      t += 0.08;
+      if (t > 1) {
+        this._applyHeadTransform(this._headTiltCurrent, this._headNodCurrent, 1);
+        return;
+      }
+      const scale = 1 + Math.sin(t * Math.PI) * 0.06;
+      this._applyHeadTransform(this._headTiltCurrent, this._headNodCurrent, scale);
+      requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  }
+
+  // ---- Lip sync from real audio amplitude ----
+  updateAudioAmplitude(value) {
+    // Smooth the amplitude with exponential moving average
+    this._lastAudioAmp = this._lastAudioAmp * 0.5 + value * 0.5;
+    if (this.currentEmotion === 'speaking') {
+      this._applyLipSync(this._lastAudioAmp);
+    }
+  }
+
+  updateMicAmplitude(value) {
+    this._lastMicAmp = this._lastMicAmp * 0.4 + value * 0.6;
+  }
+
+  _applyLipSync(amp) {
+    const style = getComputedStyle(document.documentElement);
+    const irisColor = style.getPropertyValue('--iris-speak').trim();
+    const glowColor = style.getPropertyValue('--glow-speak').trim();
+
+    // Map amplitude 0-100 to mouth open amount
+    const openY  = 15 + (amp / 100) * 12;   // 15 to 27
+    const closeY = 15 - (amp / 100) * 4;    // 15 to 11
+
+    const d = amp > 5
+      ? `M 14,${closeY.toFixed(1)} Q 40,${openY.toFixed(1)} 66,${closeY.toFixed(1)}`
+      : `M 12,15 Q 40,21 68,15`;
+
+    this._setMouth(d, irisColor, glowColor);
+
+    // Scale ambient rings with amplitude
+    const ringScale = 1 + (amp / 100) * 0.12;
+    document.querySelectorAll('.ambient-ring').forEach(el => {
+      el.style.transform = `scale(${ringScale})`;
+    });
+  }
+
+  // ---- Waveform bars for listening state (mic amplitude) ----
+  updateMicWaveform(amp) {
+    const bars = document.querySelectorAll('#listen-bars span');
+    if (!bars.length) return;
+    bars.forEach((bar, i) => {
+      const offset = Math.sin((Date.now() / 120) + i * 0.7) * 0.5 + 0.5;
+      const h = amp > 5
+        ? 4 + (amp / 100) * 22 * offset
+        : 4 + Math.random() * 3;
+      bar.style.height = `${h}px`;
+    });
+  }
+
+  // ---- Mouth shapes per emotion ----
+  _setMouthForEmotion(emotion, irisColor, glowColor) {
+    const shapes = {
+      idle:      'M 15,16 Q 40,20 65,16',
+      neutral:   'M 15,16 Q 40,20 65,16',
+      listening: 'M 12,14 Q 40,23 68,14',
+      thinking:  'M 20,16 Q 40,18 60,16',
+      speaking:  'M 12,15 Q 40,23 68,15',
+      happy:     'M 8,9  Q 40,32 72,9',
+      concerned: 'M 16,22 Q 40,11 64,22',
+      sad:       'M 12,25 Q 40,7  68,25',
+      surprised: 'M 33,9  Q 40,28 47,9',
+      sleepy:    'M 22,16 Q 40,17 58,16',
+    };
+    this._setMouth(shapes[emotion] || shapes.idle, irisColor, glowColor);
+  }
+
   _setMouth(d, color, glow) {
     if (!this.mouthPath) return;
     this.mouthPath.setAttribute('d', d);
     if (color) {
       this.mouthPath.style.stroke = color;
-      this.mouthPath.style.filter = `drop-shadow(0 0 5px ${glow || color})`;
+      this.mouthPath.style.filter = `drop-shadow(0 0 6px ${glow || color})`;
     }
   }
 
   // ---- Eyebrow shapes per emotion ----
-  // viewBox 0 0 60 20. Left brow: inner edge = RIGHT side. Right brow: inner edge = LEFT side.
   _setEyebrowsForEmotion(emotion, irisColor, glowColor) {
     const L = {
-      idle:      'M 4,14 Q 30,8  56,12',   // Gentle arch — relaxed
+      idle:      'M 4,14 Q 30,8  56,12',
       neutral:   'M 4,14 Q 30,8  56,12',
-      listening: 'M 4,9  Q 30,4  56,8',    // Both raised — attentive
-      thinking:  'M 4,10 Q 30,7  56,15',   // Outer drops, inner high — furrowed focus
-      speaking:  'M 4,11 Q 30,6  56,10',   // Slightly raised — engaged
-      happy:     'M 4,7  Q 30,2  56,7',    // High arched — joy
-      concerned: 'M 4,12 Q 30,5  56,16',   // Outer drops sharply — worried
-      sad:       'M 4,8  Q 30,10 56,15',   // Drooped outward — sad
-      surprised: 'M 4,5  Q 30,1  56,5',    // MAX raised — shock
-      sleepy:    'M 4,16 Q 30,13 56,15',   // Low and flat — sleepy
+      listening: 'M 4,9  Q 30,4  56,8',
+      thinking:  'M 4,10 Q 30,6  56,10',
+      speaking:  'M 4,11 Q 30,6  56,10',
+      happy:     'M 4,7  Q 30,2  56,7',
+      concerned: 'M 4,12 Q 30,5  56,16',
+      sad:       'M 4,8  Q 30,10 56,15',
+      surprised: 'M 4,5  Q 30,1  56,5',
+      sleepy:    'M 4,16 Q 30,13 56,15',
     };
-    const R = {  // Mirror of L (inner edge is the LEFT side now)
+    const R = {
       idle:      'M 4,12 Q 30,8  56,14',
       neutral:   'M 4,12 Q 30,8  56,14',
       listening: 'M 4,8  Q 30,4  56,9',
-      thinking:  'M 4,15 Q 30,7  56,10',   // Mirror of left furrowed
+      thinking:  'M 4,14 Q 30,10 56,14',
       speaking:  'M 4,10 Q 30,6  56,11',
       happy:     'M 4,7  Q 30,2  56,7',
-      concerned: 'M 4,16 Q 30,5  56,12',   // Mirror
+      concerned: 'M 4,16 Q 30,5  56,12',
       sad:       'M 4,15 Q 30,10 56,8',
       surprised: 'M 4,5  Q 30,1  56,5',
       sleepy:    'M 4,15 Q 30,13 56,16',
     };
-    const dL = L[emotion] || L.idle;
-    const dR = R[emotion] || R.idle;
     [this.browL, this.browR].forEach((el, i) => {
       if (!el) return;
-      el.setAttribute('d', i === 0 ? dL : dR);
+      el.setAttribute('d', i === 0 ? (L[emotion] || L.idle) : (R[emotion] || R.idle));
       el.style.stroke = irisColor;
       el.style.filter = `drop-shadow(0 0 5px ${glowColor})`;
     });
   }
 
-  // ---- Blink (quick eyelid close → open) ----
+  // ---- Blink ----
   blink(doubleBlink = false) {
     const cfg = FACE_STATES[this.currentEmotion] || FACE_STATES.idle;
     this._setEyelids(100, 0);
@@ -251,13 +338,11 @@ class RobotFace {
     }, 120);
   }
 
-  // ---- Private: set eyelid heights (% of eye socket) ----
   _setEyelids(top, bot) {
     const pct = h => `${h}%`;
     const applyBorderRadius = (el, isTop) => {
       if (!el) return;
       el.style.height = isTop ? pct(top) : pct(bot);
-      // Happy squint — curved eyelid bottom edge
       if (isTop && top > 25) {
         el.style.borderRadius = '0 0 60% 60%';
       } else {
@@ -270,16 +355,10 @@ class RobotFace {
     applyBorderRadius(this.eyelidBotR, false);
   }
 
-  // ---- Private: move pupils (px offset from center) ----
   _movePupils(x, y, smooth = true) {
-    // Clamp to max movement radius
     const dist  = Math.sqrt(x * x + y * y);
     const limit = this._maxMove;
-    if (dist > limit) {
-      const scale = limit / dist;
-      x *= scale; y *= scale;
-    }
-
+    if (dist > limit) { const s = limit / dist; x *= s; y *= s; }
     const transition = smooth ? 'transform 0.4s cubic-bezier(0.34,1.56,0.64,1)' : 'none';
     [this.irisL, this.irisR].forEach(el => {
       if (!el) return;
@@ -288,7 +367,6 @@ class RobotFace {
     });
   }
 
-  // ---- Private: scale pupil ----
   _setPupilScale(scale) {
     const size = `${Math.round(scale * 48)}%`;
     document.querySelectorAll('.pupil').forEach(el => {
@@ -297,16 +375,17 @@ class RobotFace {
     });
   }
 
-  // ---- Private: stop all interval timers ----
   _stopAnimations() {
     clearTimeout(this._blinkTimer);
     clearTimeout(this._lookTimer);
     clearTimeout(this._thinkTimer);
     clearTimeout(this._speakTimer);
     clearTimeout(this._mouthTimer);
+    clearInterval(this._lipSyncTimer);
+    clearTimeout(this._headTimer);
   }
 
-  // ---- Idle: natural wandering gaze + occasional blink ----
+  // ---- Idle animations ----
   _startIdleAnimations() {
     const scheduleBlink = () => {
       this._blinkTimer = setTimeout(() => {
@@ -327,10 +406,15 @@ class RobotFace {
           const r = this._maxMove * (0.25 + Math.random() * 0.65);
           this._movePupils(Math.cos(angle) * r, Math.sin(angle) * r * 0.55);
           setTimeout(() => {
-            if (this.currentEmotion === 'idle' || this.currentEmotion === 'neutral' || this.currentEmotion === 'sleepy') {
+            if (this.currentEmotion === 'idle' || this.currentEmotion === 'neutral') {
               this._movePupils(0, 0);
             }
           }, 1000 + Math.random() * 1200);
+
+          // Occasionally do a subtle head drift in idle
+          const driftTilt = (Math.random() - 0.5) * 3;
+          this._animateHeadTilt(driftTilt, 0);
+          setTimeout(() => this._animateHeadTilt(0, 0), 2500);
         }
         scheduleLook();
       }, 4500 + Math.random() * 5000);
@@ -338,10 +422,8 @@ class RobotFace {
     scheduleLook();
   }
 
-  // ---- Thinking: rapid saccades — scanning memory like REM sleep ----
+  // ---- Thinking: rapid saccades ----
   _startThinkingAnimation() {
-    // Pattern: dart up-left → right → left → center-up → repeat
-    // Mimics actual human "thinking" eye movement
     const scanPath = [
       [-22, -20], [20, -22], [-14, -16], [18, -18],
       [-6,  -24], [14, -20], [-20, -12], [0,   -22],
@@ -351,18 +433,22 @@ class RobotFace {
     const scan = () => {
       if (this.currentEmotion !== 'thinking') return;
       const [x, y] = scanPath[idx % scanPath.length];
-      // Jitter for natural scanning
       this._movePupils(x + (Math.random()-0.5)*3, y + (Math.random()-0.5)*2);
       idx++;
-      // Fast scan then pause — like reading
+
+      // Head micro-drift while thinking
+      if (idx % 4 === 0) {
+        const driftTilt = -4 + (Math.random() - 0.5) * 2;
+        this._animateHeadTilt(driftTilt, -3 + (Math.random()-0.5)*2);
+      }
+
       const delay = idx % 3 === 0
-        ? 900 + Math.random() * 500   // pause
-        : 380 + Math.random() * 280;  // quick dart
+        ? 900 + Math.random() * 500
+        : 380 + Math.random() * 280;
       this._thinkTimer = setTimeout(scan, delay);
     };
     scan();
 
-    // Less blinking when thinking hard
     const blink = () => {
       this._blinkTimer = setTimeout(() => {
         if (this.currentEmotion === 'thinking') { this.blink(); blink(); }
@@ -371,22 +457,26 @@ class RobotFace {
     blink();
   }
 
-  // ---- Listening: wide-eyed attention with micro-tracking ----
+  // ---- Listening: wide-eyed + waveform ----
   _startListeningAnimation() {
-    // Eyes wide, focused forward — micro-movements show active attention
     let phase = 0;
     const track = () => {
       if (this.currentEmotion !== 'listening') return;
-      // Tiny 1-2px micro-movements: subtle tracking of speaker
       const x = Math.sin(phase * 0.6) * 2.5;
       const y = -5 + Math.cos(phase * 0.4) * 1.8;
       this._movePupils(x, y, false);
+
+      // Update waveform bars from mic amplitude
+      this.updateMicWaveform(this._lastMicAmp);
+
       phase += 0.12;
       this._lookTimer = setTimeout(track, 70);
     };
     track();
 
-    // Fewer blinks = more attentive (humans blink less when focused)
+    // Lean-in head nod when listening
+    this._animateHeadTilt(3, -2);
+
     const blink = () => {
       this._blinkTimer = setTimeout(() => {
         if (this.currentEmotion === 'listening') { this.blink(); blink(); }
@@ -395,9 +485,8 @@ class RobotFace {
     blink();
   }
 
-  // ---- Speaking: natural conversational eye movement ----
+  // ---- Speaking: eye contact + real lip sync ----
   _startSpeakingAnimation() {
-    // Natural speech: make "eye contact" center, then glance away, then back
     const gazePoints = [
       [0, 0], [3, -2], [-2, 1], [1, -3],
       [0, 0], [-3, -1], [2, 2], [0, -1],
@@ -413,30 +502,46 @@ class RobotFace {
     };
     gaze();
 
-    // Mouth: alternate open/closed to simulate talking
+    // Real lip sync driven by audio_amplitude messages (see updateAudioAmplitude)
+    // Fallback animated mouth if no amplitude data comes in
     const style = getComputedStyle(document.documentElement);
     const irisColor = style.getPropertyValue('--iris-speak').trim();
     const glowColor = style.getPropertyValue('--glow-speak').trim();
-    let mouthOpen = false;
-    const animateMouth = () => {
+
+    let fallbackActive = true;
+    const fallbackMouth = () => {
       if (this.currentEmotion !== 'speaking') {
-        // Reset mouth to neutral smile when done speaking
         this._setMouth('M 15,16 Q 40,20 65,16', irisColor, glowColor);
+        document.querySelectorAll('.ambient-ring').forEach(el => el.style.transform = '');
         return;
       }
-      mouthOpen = !mouthOpen;
-      // Vary open amount for natural speech rhythm
-      const openAmt = mouthOpen ? (18 + Math.random() * 10) : 15;
-      const closeAmt = mouthOpen ? (12 - Math.random() * 4) : 20;
-      const d = mouthOpen
-        ? `M 15,${closeAmt} Q 40,${openAmt + 8} 65,${closeAmt}`
-        : `M 12,15 Q 40,22 68,15`;
-      this._setMouth(d, irisColor, glowColor);
-      this._mouthTimer = setTimeout(animateMouth, 110 + Math.random() * 90);
+      // Only animate if no real amplitude (prevents fighting with lip sync)
+      if (this._lastAudioAmp < 2) {
+        const open = Math.random() > 0.45;
+        const openAmt  = open ? (17 + Math.random() * 8) : 15;
+        const closeAmt = open ? (12 - Math.random() * 3) : 19;
+        const d = open
+          ? `M 14,${closeAmt} Q 40,${openAmt + 7} 66,${closeAmt}`
+          : `M 12,15 Q 40,22 68,15`;
+        this._setMouth(d, irisColor, glowColor);
+      }
+      this._mouthTimer = setTimeout(fallbackMouth, 120 + Math.random() * 100);
     };
-    animateMouth();
+    fallbackMouth();
 
-    // Normal blink rate while speaking
+    // Head sway while speaking — subtle life-like movement
+    let headPhase = 0;
+    const headSway = () => {
+      if (this.currentEmotion !== 'speaking') return;
+      headPhase += 0.04;
+      const tilt = Math.sin(headPhase) * 1.5;
+      const nod  = Math.sin(headPhase * 1.3) * 1.0;
+      this._applyHeadTransform(tilt, nod);
+      this._headTimer = setTimeout(headSway, 50);
+    };
+    headSway();
+
+    // Blink while speaking
     const blink = () => {
       this._blinkTimer = setTimeout(() => {
         if (this.currentEmotion === 'speaking') { this.blink(); blink(); }
@@ -450,7 +555,6 @@ class RobotFace {
 // WebSocket + UI Glue
 // =====================================================
 
-// Init face engine
 const face = new RobotFace();
 
 // DOM
@@ -523,15 +627,41 @@ function connectWebSocket() {
 
 function handleServerMessage(data) {
   switch (data.type) {
-    case 'state_change':    updateState(data.state); break;
-    case 'emotion_change':  setEmotion(data.emotion, data.intensity); break;
-    case 'transcript':      showBubble(data.text); break;
-    case 'countdown':       showCountdown(data.seconds, data.total); break;
-    case 'show_card':       renderContentCard(data); break;
-    case 'vitals_update':   updateVitalsDisplay(data.vitals); break;
+    case 'state_change':      updateState(data.state); break;
+    case 'emotion_change':    setEmotion(data.emotion, data.intensity); break;
+    case 'transcript':        showBubble(data.text); break;
+    case 'countdown':         showCountdown(data.seconds, data.total); break;
+    case 'show_card':         renderContentCard(data); break;
+    case 'vitals_update':     updateVitalsDisplay(data.vitals); break;
     case 'telemedicine_trigger': showTelemedicineCall(data.reason, data.url); break;
-    case 'camera_preview':  showCameraPreview(data.image); break;
+    case 'telemedicine_end_trigger': endTelemedicineCall(); break;
+    case 'camera_preview':    showCameraPreview(data.image); break;
+    case 'audio_amplitude':   handleAudioAmplitude(data.value); break;
+    case 'mic_amplitude':     handleMicAmplitude(data.value); break;
+    case 'wake_word_detected': handleWakeWordDetected(); break;
   }
+}
+
+// ---- Audio amplitude (Gemini speaking) → lip sync ----
+function handleAudioAmplitude(value) {
+  face.updateAudioAmplitude(value);
+}
+
+// ---- Mic amplitude (user speaking) → waveform ----
+function handleMicAmplitude(value) {
+  face.updateMicAmplitude(value);
+}
+
+// ---- Wake word flash ----
+function handleWakeWordDetected() {
+  face.wakeWordFlash();
+  showBubble('🔔 ได้ยินครับ...', 1500);
+  // Quick surprised → back to listening
+  setEmotion('surprised');
+  setTimeout(() => {
+    if (appContainer.classList.contains('state-listening')) return;
+    setEmotion('listening');
+  }, 400);
 }
 
 // ---- Speech Bubble ----
@@ -558,12 +688,11 @@ function startThinkingTimer() {
     if (appContainer.classList.contains('state-thinking')) {
       showBubble('🤔 กำลังคิดอยู่นะครับ รอแป๊บนึง...', 6000);
     }
-  }, 4000);  // Show after 4s of thinking
+  }, 4000);
 }
 function clearThinkingTimer() {
   clearTimeout(thinkingTimer);
 }
-
 
 // ---- State Updates ----
 const countdownArc = document.getElementById('ptt-countdown-arc');
@@ -574,7 +703,6 @@ function showCountdown(seconds, total) {
       countdownArc.classList.remove('active');
       countdownArc.style.setProperty('--countdown-pct', '0%');
     }
-    // Reset status hint after countdown
     if (!appContainer.classList.contains('state-thinking') &&
         !appContainer.classList.contains('state-speaking')) {
       statusHint.innerText = 'LISTENING';
@@ -586,7 +714,6 @@ function showCountdown(seconds, total) {
     countdownArc.style.setProperty('--countdown-pct', pct.toFixed(1) + '%');
     countdownArc.classList.add('active');
   }
-  // Show remaining seconds in status hint
   statusHint.innerText = `${seconds}s`;
 }
 
@@ -594,11 +721,14 @@ function updateState(state) {
   appContainer.classList.remove('state-listening', 'state-thinking', 'state-speaking');
   if (state !== 'idle') appContainer.classList.add(`state-${state}`);
 
-  // Clear countdown arc
   countdownArc.classList.remove('active');
   countdownArc.style.setProperty('--countdown-pct', '0%');
 
   clearThinkingTimer();
+
+  // Reset amplitude tracking on state change
+  face._lastAudioAmp = 0;
+  face._lastMicAmp   = 0;
 
   if (state === 'listening') {
     isPttPressed = true;
@@ -610,6 +740,8 @@ function updateState(state) {
     statusHint.innerText = 'THINKING';
     setEmotion('thinking');
     startThinkingTimer();
+    // Reset ambient rings
+    document.querySelectorAll('.ambient-ring').forEach(el => el.style.transform = '');
   } else if (state === 'speaking') {
     isPttPressed = false;
     statusHint.innerText = 'SPEAKING';
@@ -619,6 +751,7 @@ function updateState(state) {
     isPttPressed = false;
     statusHint.innerText = 'READY';
     setEmotion('neutral');
+    document.querySelectorAll('.ambient-ring').forEach(el => el.style.transform = '');
   }
 }
 
@@ -645,12 +778,14 @@ function releasePTT() {
 
 function toggleMic() {
   const state = appContainer.className;
-  if (state.includes('state-listening')) {
-    // Already listening — don't release, VAD handles it automatically
+  if (state.includes('state-thinking')) {
+    // In thinking — tap to barge-in (interrupt) by sending ptt_press
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ptt_press' }));
     return;
   }
-  if (state.includes('state-thinking')) {
-    // Already processing — ignore tap
+  if (state.includes('state-listening')) {
+    // Tap again while listening = manually release (send now)
+    releasePTT();
     return;
   }
   pressPTT();
@@ -660,7 +795,7 @@ function toggleMic() {
 faceStage.addEventListener('click', (e) => { e.preventDefault(); toggleMic(); });
 faceStage.addEventListener('touchend', (e) => { e.preventDefault(); toggleMic(); });
 
-// Test Speaker (now top-left)
+// Test Speaker
 const testAudioBtn = document.getElementById('test-audio-btn');
 if (testAudioBtn) {
   testAudioBtn.addEventListener('click', (e) => {
@@ -686,6 +821,19 @@ if (cameraBtn) {
   cameraBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'capture_camera' }));
+  });
+}
+
+// Telemedicine Manual Button
+const telemedManualBtn = document.getElementById('telemed-manual-btn');
+if (telemedManualBtn) {
+  telemedManualBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'trigger_telemedicine_manual' }));
+    }
+    // Open overlay immediately (don't wait for server echo)
+    showTelemedicineCall('ผู้ป่วยขอพบแพทย์', 'https://hub-api.socare.app/videoCall?roomName=SocareTelemed');
   });
 }
 
@@ -759,27 +907,99 @@ function showCameraPreview(base64Image) {
   setTimeout(() => { preview.style.display = 'none'; }, 5000);
 }
 
-// ---- Telemedicine ----
+// ---- Telemedicine (iframe → direct Jitsi URL) ----
+const jitsiContainer = document.getElementById('jitsi-container');
+let jitsiAPI = null;
+
 function showTelemedicineCall(reason, url) {
-  telemedOverlay.style.display = 'flex';
-  setEmotion('concerned');
-  transcriptText.innerText = 'กำลังเปิดกล้องระบบแพทย์ทางไกล Socare...';
-  // Open Socare video call in iframe
-  const videoFrame = document.getElementById('socare-video-frame');
-  if (videoFrame && url) {
-    videoFrame.src = url;
-    videoFrame.style.display = 'block';
+  // หากหน้าต่างเปิดอยู่แล้ว ไม่ต้องโหลดใหม่เพื่อป้องกันการหลุดสาย
+  if (telemedOverlay.style.display === 'flex') {
+    return;
   }
+
+  setEmotion('concerned');
+  showBubble('🩺 กำลังต่อสายหาคุณหมอ... กรุณารอสักครู่', 4000);
+
+  // เคลียร์ container
+  jitsiContainer.innerHTML = '';
+
+  const domain = "meet.socare.app";
+  const options = {
+      roomName: 'SocareTelemed',
+      width: '100%',
+      height: '100%',
+      parentNode: jitsiContainer,
+      userInfo: {
+          displayName: 'ผู้ป่วย',
+      },
+      configOverwrite: {
+          disableDeepLinking: true,
+          prejoinPageEnabled: false,
+          disableLocalVideoFlip: true,
+          doNotFlipLocalVideo: true,
+          hideParticipantsStats: true,
+          disableRemoteMute: true,
+          disableRemoteControl: true,
+          hideConferenceTimer: false,
+          remoteVideoMenu: {
+              disableKick: true,
+              disableGrantModerator: true,
+          },
+          subject: 'ต่อสายหาคุณหมอ',
+          startWithAudioMuted: false,
+          startWithVideoMuted: false,
+          disableAGC: true
+      },
+      interfaceConfigOverwrite: {
+          FILM_STRIP_MAX_HEIGHT: 0.1,
+          SHOW_CHROME_EXTENSION_BANNER: false,
+          DISABLE_DOMINANT_SPEAKER_INDICATOR: true,
+          LANG_DETECTION: true,
+          VIDEO_QUALITY_LABEL_DISABLED: true,
+          CONNECTION_INDICATOR_DISABLED: true,
+          TOOLBAR_BUTTONS: ['microphone', 'camera', 'fullscreen', 'tileview', 'desktop', 'profile', 'settings', 'chat', 'hangup']
+      }
+  };
+
+  try {
+      jitsiAPI = new JitsiMeetExternalAPI(domain, options);
+      
+      // ดักจับอีเวนต์การวางสายจากห้องสนทนาของ Jitsi
+      jitsiAPI.addEventListener('readyToClose', () => {
+          endTelemedicineCall();
+      });
+      jitsiAPI.addEventListener('videoConferenceLeft', () => {
+          endTelemedicineCall();
+      });
+  } catch (err) {
+      console.error("Failed to initialize Jitsi API:", err);
+      jitsiContainer.innerHTML = `<div style="color:#f87171; text-align:center; padding:20px; font-family:Sarabun,sans-serif;">❌ ไม่สามารถโหลดระบบเชื่อมต่อสายได้</div>`;
+  }
+
+  telemedOverlay.style.display = 'flex';
 }
-endTelemedBtn.addEventListener('click', () => {
+
+function endTelemedicineCall() {
+  if (jitsiAPI) {
+    try {
+      jitsiAPI.executeCommand('hangup');
+      jitsiAPI.dispose();
+    } catch (e) {
+      console.error("Error disposing Jitsi:", e);
+    }
+    jitsiAPI = null;
+  }
+  jitsiContainer.innerHTML = '';
   telemedOverlay.style.display = 'none';
   setEmotion('neutral');
-  // Clear iframe
-  const videoFrame = document.getElementById('socare-video-frame');
-  if (videoFrame) { videoFrame.src = ''; videoFrame.style.display = 'none'; }
-  const mockView = document.getElementById('telemed-mock');
-  if (mockView) mockView.style.display = 'flex';
-});
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'telemedicine_end' }));
+  }
+}
+
+endTelemedBtn.addEventListener('click', () => endTelemedicineCall());
+
+
 
 // ---- Reminder ACK ----
 ackReminderBtn.addEventListener('click', () => {

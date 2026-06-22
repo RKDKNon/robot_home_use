@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ต่อสายหาคุณหมอ</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
+        #meet { width: 100%; height: 100vh; }
+        #loading {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            color: #7dd3f7; font-family: Sarabun, sans-serif;
+            background: #0a1628;
+            gap: 16px;
+        }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid rgba(0,180,255,0.2);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #error { display:none; color: #f87171; font-family: Sarabun, sans-serif; text-align: center; padding: 24px; }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        <p>🩺 กำลังต่อสายหาคุณหมอ...</p>
+    </div>
+    <div id="error" style="display:none; color: #f87171; font-family: Sarabun, sans-serif; text-align: center; padding: 24px;"></div>
+    <div id="meet"></div>
+
+    <script src="https://meet.jit.si/external_api.js"></script>
+    <script>
+        const ROOM = 'SocareTelemed';
+        const DOMAIN = 'meet.socare.app';
+
+        // Check if external API loaded successfully
+        if (typeof JitsiMeetExternalAPI === 'undefined') {
+            document.getElementById('loading').style.display = 'none';
+            const err = document.getElementById('error');
+            err.style.display = 'block';
+            err.innerHTML = '❌ ไม่สามารถโหลดระบบเชื่อมต่อสายได้<br>กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
+        } else {
+            startCall();
+        }
+
+        function startCall() {
+            document.getElementById('loading').style.display = 'none';
+
+            const api = new JitsiMeetExternalAPI(DOMAIN, {
+                roomName: ROOM,
+                width: '100%',
+                height: window.innerHeight,
+                parentNode: document.getElementById('meet'),
+                userInfo: { displayName: 'ผู้ป่วย' },
+                configOverwrite: {
+                    prejoinPageEnabled: false,
+                    disableDeepLinking: true,
+                    startWithAudioMuted: false,
+                    startWithVideoMuted: false,
+                    disableRemoteMute: true,
+                    subject: 'ต่อสายหาคุณหมอ',
+                },
+                interfaceConfigOverwrite: {
+                    SHOW_CHROME_EXTENSION_BANNER: false,
+                    SHOW_JITSI_WATERMARK: false,
+                    FILM_STRIP_MAX_HEIGHT: 60,
+                    TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview', 'fullscreen'],
+                }
+            });
+
+            api.addEventListener('readyToClose', () => {
+                window.parent.postMessage('telemed_close', '*');
+            });
+            api.addEventListener('videoConferenceLeft', () => {
+                window.parent.postMessage('telemed_close', '*');
+            });
+        }
+    </script>
+</body>
+</html>

@@ -158,71 +158,7 @@ class WakeWordDetector:
             print("👂 Wake word detector stopped.")
 
     async def _on_wake_word_detected(self):
-        """Activate listening session when wake word heard."""
-        sm = self.state_manager
+        """Activate listening session when wake word heard.
+        Delegates to StateManager.handle_wake_word() for unified flow."""
+        await self.state_manager.handle_wake_word()
 
-        # Don't interrupt active conversation
-        if sm.state in ("listening", "thinking", "speaking"):
-            print("👂 Already in conversation — ignoring wake word.")
-            return
-
-        # Show activation message
-        await sm.broadcast_to_frontend({
-            "type": "transcript",
-            "text": "🔔 ได้ยินครับ กำลังฟัง..."
-        })
-
-        # Open mic
-        await sm.handle_ptt_press()
-
-        # ── Amplitude VAD loop (same logic as _auto_listen_after_speaking) ──
-        SPEECH_THRESHOLD     = 150    # amplitude above = speech (lowered for elderly/soft speech)
-        SILENCE_AFTER_SPEECH = 2.0    # seconds silence → patient done (increased for elderly speech pace)
-        NO_SPEECH_TIMEOUT    = 8.0    # give up if nobody speaks
-        MAX_LISTEN           = 30     # absolute max
-        TICK                 = 0.25
-
-        speech_detected = False
-        silence_start   = None
-        no_speech_start = asyncio.get_running_loop().time()
-        elapsed         = 0.0
-
-        while elapsed < MAX_LISTEN:
-            await asyncio.sleep(TICK)
-            elapsed += TICK
-
-            if sm.state != "listening":
-                return  # Gemini responded or state changed externally
-
-            amp = sm.audio_handler.last_amplitude
-            now = asyncio.get_running_loop().time()
-
-            if amp > SPEECH_THRESHOLD:
-                speech_detected = True
-                silence_start   = None
-            else:
-                if silence_start is None:
-                    silence_start = now
-                silent_for = now - silence_start
-
-                if speech_detected and silent_for >= SILENCE_AFTER_SPEECH:
-                    print(f"🔔 WakeWord VAD: เงียบ {SILENCE_AFTER_SPEECH}s → ส่ง Gemini")
-                    break
-
-                if not speech_detected and (now - no_speech_start) >= NO_SPEECH_TIMEOUT:
-                    print(f"🔔 WakeWord VAD: ไม่มีเสียง {NO_SPEECH_TIMEOUT}s → ปิดไมค์")
-                    sm.audio_handler.muted = True
-                    if sm.gemini_client.is_connected:
-                        await sm.gemini_client.send_activity_end()
-                    await sm.update_state("idle")
-                    return
-
-        # Patient finished speaking → ActivityEnd → Gemini responds
-        if sm.state == "listening":
-            sm.audio_handler.muted = True
-            if sm.gemini_client.is_connected:
-                await sm.gemini_client.send_activity_end()
-            await sm.broadcast_to_frontend({"type": "countdown", "seconds": 0, "total": MAX_LISTEN})
-            print("🔔 WakeWord: ActivityEnd → รอ Gemini ตอบ...")
-            await sm.update_state("thinking")
-            asyncio.create_task(sm._thinking_timeout_checker())

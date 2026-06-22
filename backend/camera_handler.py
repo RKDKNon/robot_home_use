@@ -42,6 +42,7 @@ class CameraHandler:
             except Exception:
                 pass
             self._cam = None
+        self._latest_frame = None
         print("📷 Camera stopped")
 
     def _init_camera(self):

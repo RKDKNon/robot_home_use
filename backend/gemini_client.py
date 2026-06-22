@@ -122,16 +122,32 @@ class GeminiClient:
         
         trigger_telemedicine_tool = types.FunctionDeclaration(
             name="trigger_telemedicine",
-            description="Escalate and initiate a virtual consult or telemedicine call with Socare dashboard.",
+            description=(
+                "เปิดวิดีโอคอลเพื่อพูดคุยกับแพทย์ Socare ทันที "
+                "ใช้เมื่อ: (1) ผู้ป่วยพูดว่า 'โทรหาหมอ', 'ต่อสายหมอ', 'อยากคุยกับหมอ', 'ขอหมอ', 'call doctor', "
+                "'ช่วยด้วย', 'ฉุกเฉิน', 'เจ็บมาก', 'ไม่ไหวแล้ว' หรือแสดงความต้องการพบแพทย์ "
+                "(2) ค่าวัดอยู่ในระดับอันตราย เช่น SpO2 < 90%, BP > 180, ไข้ > 39.5°C "
+                "(3) อาการที่ฟังดูอันตรายหรือผู้ป่วยร้องขอความช่วยเหลือเร่งด่วน "
+                "Call this tool immediately — do not ask for confirmation first."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "reason": types.Schema(
                         type=types.Type.STRING,
-                        description="Reason for escalation (e.g., critical vital signs, user request)."
+                        description="สาเหตุที่ต้องต่อสายหมอ เช่น 'ผู้ป่วยร้องขอ' หรือ 'SpO2 ต่ำกว่าเกณฑ์'"
                     )
                 },
                 required=["reason"]
+            )
+        )
+        
+        end_telemedicine_tool = types.FunctionDeclaration(
+            name="end_telemedicine",
+            description="วางสายหรือตัดสายการคุยกับหมอทันที ใช้เมื่อผู้ป่วยพูดว่า 'วางสาย', 'ตัดสาย', 'ยกเลิกการโทร', 'ปิดวิดีโอคอล', 'hang up', 'end call' หรือแสดงความต้องการเลิกสนทนากับแพทย์เพื่อกลับหน้าจอหลัก",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={}
             )
         )
 
@@ -144,24 +160,6 @@ class GeminiClient:
             )
         )
 
-        think_deeply_tool = types.FunctionDeclaration(
-            name="think_deeply",
-            description="Route a complex health question to a deep reasoning model for detailed analysis. Use when: patient asks about drug interactions, complex symptoms, medical conditions that need careful analysis, or when you need a more thorough answer than you can provide in real-time conversation.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "question": types.Schema(
-                        type=types.Type.STRING,
-                        description="The complex health question to analyze deeply."
-                    ),
-                    "context": types.Schema(
-                        type=types.Type.STRING,
-                        description="Optional context: patient's vitals, current medications, recent conversation."
-                    )
-                },
-                required=["question"]
-            )
-        )
 
         look_at_patient_tool = types.FunctionDeclaration(
             name="look_at_patient",
@@ -193,8 +191,8 @@ class GeminiClient:
                 set_reminder_tool,
                 get_vitals_tool,
                 trigger_telemedicine_tool,
+                end_telemedicine_tool,
                 clear_conversation_tool,
-                think_deeply_tool,
                 look_at_patient_tool,
                 look_at_object_tool
             ]
@@ -245,7 +243,7 @@ class GeminiClient:
             })
             await asyncio.sleep(retry_delay)
 
-    def _build_system_instruction(self):
+    async def _build_system_instruction(self):
         """Builds system instruction with conversation history for context restore."""
         from datetime import datetime
         now = datetime.now()
@@ -269,11 +267,14 @@ class GeminiClient:
             "- **ความรู้ทั่วไป**: ประวัติศาสตร์ วิทยาศาสตร์ ภูมิศาสตร์ คณิตศาสตร์ เทคโนโลยี\n"
             "- **ข่าวและเหตุการณ์**: คุยเรื่องกีฬา การเมือง บันเทิง\n"
             "- **ความบันเทิง**: เล่านิทาน บอกมุกตลก เล่าเรื่องผี เกมทายปัญหา\n"
-            "- **ดูแลสุขภาพ**: แจ้งเตือนยา ดูค่าวัด ต่อสายหมอ (แต่ไม่วินิจฉัยโรคหรือสั่งยา)\n"
+            "- **ดูแลสุขภาพ**: แจ้งเตือนยา ดูค่าวัด ต่อสายหมอ หรือวางสาย/ตัดสายเมื่อคุยเสร็จ (แต่ไม่วินิจฉัยโรคหรือสั่งยา)\n"
             "- **กล้อง**: มองดูคนไข้หรือสิ่งของเมื่อถูกขอ\n\n"
 
             "## กฎสำคัญ\n"
-            "- ตอบภาษาไทยเสมอ (เว้นแต่ถูกขอให้ตอบภาษาอื่น)\n"
+            "- ตอบเป็นภาษาไทยเสมอ (ห้ามตอบภาษาอังกฤษเด็ดขาด ไม่ว่าในกรณีใดๆ)\n"
+            "- ห้ามพิมพ์หรือพูดข้อความในลักษณะรายงานการทำงานของโค้ด หรือหัวข้อความคืบหน้าของระบบ เช่น **Triggering Telemedicine Protocol** หรือ **Acknowledge Connection** เด็ดขาด ให้พูดและแสดงผลเป็นข้อความคุยกับคนไข้โดยตรงด้วยประโยคภาษาไทยที่สุภาพ อบอุ่น และเป็นธรรมชาติเสมอ\n"
+            "- เมื่อมีการต่อสายหาคุณหมอ (เรียกใช้เครื่องมือ trigger_telemedicine) ให้พูดว่า 'กำลังต่อสายหาคุณหมอให้สักครู่นะครับ' หรือข้อความทำนองนี้ทันที ห้ามพูดคำว่า 'telemed' หรือ 'telemedicine' ให้ผู้ใช้ฟัง เพราะผู้ใช้จะไม่เข้าใจ ให้ใช้คำว่า 'ต่อสายหาคุณหมอ' หรือ 'โทรหาหมอ' เสมอ\n"
+            "- เมื่อผู้ใช้บอกให้วางสาย ตัดสาย หรือยกเลิกการโทร (เรียกใช้เครื่องมือ end_telemedicine) ให้พูดว่า 'วางสายเรียบร้อยแล้วครับ' หรือ 'วางสายให้แล้วครับ' ทันที\n"
             "- ไม่ปฏิเสธคำขอโดยไม่มีเหตุผล — ถ้าขอร้องเพลง ก็ร้อง ถ้าขอเล่าเรื่อง ก็เล่า\n"
             "- ถ้าค่าวัดหรืออาการฟังดูอันตราย ให้เสนอต่อสายหมอทันที\n"
             "- ใช้ set_emotion เพื่อแสดงอารมณ์ตามบทสนทนา\n"
@@ -282,12 +283,12 @@ class GeminiClient:
             "## เครื่องมือพิเศษ\n"
             "- look_at_patient: ใช้เมื่อ 'ดูหน้าฉัน', 'มองฉัน', หรืออยากรู้ว่าผู้ใช้เป็นอย่างไร\n"
             "- look_at_object: ใช้เมื่อผู้ใช้ยกสิ่งของให้ดูและถามว่าคืออะไร\n"
-            "- think_deeply: ใช้เมื่อคำถามซับซ้อน เช่น ยาตีกัน หรือต้องวิเคราะห์ลึก\n"
+            "- end_telemedicine: ใช้เมื่อผู้ป่วยพูดให้วางสาย, ตัดสาย หรือยกเลิกการโทร\n"
         )
 
         # Load recent conversation history for context restore
         try:
-            history = db_manager.get_recent_conversation(50)
+            history = await asyncio.to_thread(db_manager.get_recent_conversation, 50)
             if history:
                 history_text = "\n".join(
                     f"[{h['role']}]: {h['content']}" for h in history
@@ -315,7 +316,7 @@ class GeminiClient:
                 pass
         self.client = genai.Client(api_key=self.api_key)
 
-        system_text = self._build_system_instruction()
+        system_text = await self._build_system_instruction()
 
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
@@ -469,9 +470,8 @@ class GeminiClient:
                                         "type": "transcript",
                                         "text": part.text
                                     })
-                                    # Store model response in conversation history
                                     try:
-                                        db_manager.add_conversation("model", part.text)
+                                        await asyncio.to_thread(db_manager.add_conversation, "model", part.text)
                                     except Exception as e:
                                         print(f"⚠️ Failed to save model response: {e}")
 
@@ -480,6 +480,19 @@ class GeminiClient:
                                     self.audio_handler.play_audio_chunk(part.inline_data.data)
                                     # Change state to Speaking
                                     await self.state_manager.update_state("speaking")
+                                    # Compute amplitude from audio chunk for lip sync
+                                    try:
+                                        import numpy as np
+                                        audio_np = np.frombuffer(part.inline_data.data, dtype=np.int16)
+                                        amp = int(np.max(np.abs(audio_np)))
+                                        amp_pct = min(100, int(amp / 8000 * 100))
+                                        await self.state_manager.broadcast_to_frontend({
+                                            "type": "audio_amplitude",
+                                            "value": amp_pct
+                                        })
+                                    except Exception:
+                                        pass
+
 
                         # Handle turn completion — Gemini finished responding
                         if message.server_content.turn_complete:
