@@ -1,8 +1,20 @@
 import asyncio
+import sys
+
+# Polyfill asyncio.to_thread for Python < 3.9 (like Python 3.8 on Orange Pi Focal)
+if not hasattr(asyncio, "to_thread"):
+    import functools
+    import contextvars
+    async def to_thread(func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+        func_call = functools.partial(ctx.run, func, *args, **kwargs)
+        return await loop.run_in_executor(None, func_call)
+    asyncio.to_thread = to_thread
+
 import json
 import os
 import subprocess
-import sys
 from datetime import datetime
 import websockets
 from dotenv import load_dotenv
@@ -17,6 +29,7 @@ from gemini_client import GeminiClient
 from wake_word import WakeWordDetector
 from reasoning_client import ReasoningClient
 from camera_handler import CameraHandler
+from smartcard_reader import SmartCardReaderService
 
 load_dotenv()
 
@@ -34,6 +47,7 @@ class StateManager:
         self.wake_word = WakeWordDetector(self, self.audio_handler)  # Wake word "Jarvis" detector
         self.reasoning_client = ReasoningClient()  # mimo-v2.5-pro for deep reasoning
         self.camera_handler = CameraHandler()  # Webcam for vision
+        self.smartcard_service = SmartCardReaderService(self)  # Thai ID Card reader
         
         # Wire callback for playback changes (speaking -> idle / idle -> speaking)
         self.audio_handler.on_playback_state_change = self._handle_playback_state_change
@@ -49,6 +63,8 @@ class StateManager:
         self._conversation_active = False
         # Prevents auto-listen from being triggered multiple times simultaneously
         self._auto_listen_running = False
+        # Active smart card data
+        self.active_card_data = None
 
     async def register_client(self, websocket):
         """Registers a new WebSocket frontend client and sends current state."""
@@ -254,6 +270,142 @@ class StateManager:
             print(f"Error executing tool {name}: {e}")
             return {"error": "execution_failed", "message": str(e)}
 
+    # --- Smart Card Reader Callbacks ---
+
+    def format_thai_date(self, dob_str):
+        """Formats YYYYMMDD BE date string to Thai readable format."""
+        if not dob_str or len(dob_str) != 8:
+            return "ไม่ระบุ"
+        try:
+            year_be = dob_str[:4]
+            month_str = dob_str[4:6]
+            day_str = str(int(dob_str[6:]))
+            
+            months_th = {
+                "01": "มกราคม", "02": "กุมภาพันธ์", "03": "มีนาคม", "04": "เมษายน",
+                "05": "พฤษภาคม", "06": "มิถุนายน", "07": "กรกฎาคม", "08": "สิงหาคม",
+                "09": "กันยายน", "10": "ตุลาคม", "11": "พฤศจิกายน", "12": "ธันวาคม"
+            }
+            month_name = months_th.get(month_str, month_str)
+            return f"{day_str} {month_name} พ.ศ. {year_be}"
+        except Exception:
+            return "ไม่ระบุ"
+
+    def calculate_age(self, dob_str):
+        """Calculates age in years from YYYYMMDD string (Buddhist Era)."""
+        if not dob_str or len(dob_str) != 8:
+            return None
+        try:
+            birth_year_be = int(dob_str[:4])
+            birth_month = int(dob_str[4:6])
+            birth_day = int(dob_str[6:])
+            
+            # Current date
+            now = datetime.now()
+            current_year_be = now.year + 543
+            
+            age = current_year_be - birth_year_be
+            # Adjust age if birthday has not occurred yet this year
+            if (now.month, now.day) < (birth_month, birth_day):
+                age -= 1
+            return age
+        except Exception as e:
+            print(f"⚠️ Error calculating age: {e}")
+            return None
+
+    async def handle_card_insert(self, card_data):
+        """Called when a Thai ID card is inserted and read successfully."""
+        self.active_card_data = card_data
+        name = card_data.get("name_th", "ผู้ป่วย")
+        gender = card_data.get("gender", "ไม่ระบุ")
+        dob = card_data.get("dob", "")
+        age = self.calculate_age(dob)
+        age_str = f"{age} ปี" if age is not None else "ไม่ระบุ"
+        birth_date_formatted = self.format_thai_date(dob)
+        
+        print(f"💳 [SmartCard] Card inserted: {name}, DOB: {birth_date_formatted}, Age: {age_str}, Gender: {gender}")
+        
+        # 1. Update UI (Show ID card display card)
+        addr_data = card_data.get("address", {})
+        addr_str = addr_data.get("raw") if isinstance(addr_data, dict) else str(addr_data)
+        
+        card_body = (
+            f"ชื่อ-สกุล: {name}\n"
+            f"เลขประจำตัว: {card_data.get('cid', '')}\n"
+            f"วันเกิด: {birth_date_formatted}\n"
+            f"อายุ: {age_str}  เพศ: {gender}\n"
+            f"ที่อยู่: {addr_str}"
+        )
+        
+        await self.broadcast_to_frontend({
+            "type": "show_card",
+            "card_type": "id_card",
+            "title": "💳 ข้อมูลบัตรประชาชน",
+            "body": card_body,
+            "payload": json.dumps({
+                "name": name,
+                "dob": birth_date_formatted,
+                "age": age,
+                "gender": gender,
+                "cid": card_data.get('cid', ''),
+                "img": card_data.get('img', '') # Send base64 photo for UI display
+            })
+        })
+        
+        # 2. Reconnect Gemini Live to update the system instructions with card info
+        if self.gemini_client.is_connected:
+            await self.gemini_client.force_reconnect()
+        
+        # 3. Alert Gemini Live and trigger proactive greeting
+        if self.gemini_client.is_connected:
+            try:
+                # Set conversation active to initiate continuous turn
+                self._conversation_active = True
+                
+                # Mute mic playback to prepare for Gemini speaking
+                self.audio_handler.muted = True
+                
+                # Transition state to listening -> thinking to let Gemini speak proactively
+                await self.update_state("thinking")
+                
+                # Send system alert to Gemini Live
+                alert_text = (
+                    f"คุณจาวิสครับ มีสมาชิกในบ้านเสียบบัตรประชาชนเข้าเครื่องแล้วครับ "
+                    f"ข้อมูลผู้ใช้คนนี้คือ ชื่อ: {name}, วันเกิด: {birth_date_formatted}, อายุ: {age_str}, เพศ: {gender}. "
+                    f"กรุณาพูดกล่าวต้อนรับทักทายเขาอย่างอบอุ่นและสุภาพทันที โดยระบุชื่อของเขาในประโยคต้อนรับและถามว่ามีอะไรให้ช่วยไหมครับ"
+                )
+                
+                # Start activity turn and send the prompt
+                await self.gemini_client.send_activity_start()
+                await self.gemini_client.session.send_realtime_input(text=alert_text)
+                await self.gemini_client.send_activity_end()
+                
+                # Start thinking timeout checker
+                asyncio.create_task(self._thinking_timeout_checker())
+                print(f"💳 [SmartCard] Alert sent to Gemini Live for proactive greeting.")
+            except Exception as e:
+                print(f"⚠️ Failed to send smartcard alert to Gemini: {e}")
+
+    async def handle_card_remove(self):
+        """Called when the Thai ID card is removed."""
+        print("💳 [SmartCard] Card removed.")
+        self.active_card_data = None
+        
+        # Clear card display on UI
+        await self.broadcast_to_frontend({
+            "type": "show_card",
+            "card_type": "id_card_clear",
+            "title": "บัตรประชาชนถูกถอดออก",
+            "body": "กรุณาเสียบบัตรประชาชนเพื่อเข้าสู่ระบบ"
+        })
+        
+        # Reset conversation active state
+        self._conversation_active = False
+        
+        # Reconnect Gemini Live to update the system instructions (clearing card info)
+        if self.gemini_client.is_connected:
+            await self.gemini_client.force_reconnect()
+
     # --- Wake Word Activation ---
 
     async def handle_wake_word(self):
@@ -355,7 +507,7 @@ class StateManager:
 
     async def _vad_loop(self):
         """Adaptive VAD: วัด noise floor ก่อน แล้วตั้ง threshold แบบ dynamic"""
-        SILENCE_AFTER_SPEECH = 0.5   # เงียบ 0.5s หลังพูดจบ → ส่ง Gemini
+        SILENCE_AFTER_SPEECH = 0.7   # เงียบ 0.7s หลังพูดจบ → ส่ง Gemini
         NO_SPEECH_TIMEOUT    = 3.5   # ไม่มีเสียงเลย 3.5s → ปิดไมค์
         MAX_LISTEN           = 10    # รอสูงสุด 10 วินาที
         TICK                 = 0.05
@@ -518,16 +670,57 @@ class StateManager:
             self._auto_listen_running = False
 
     async def _thinking_timeout_checker(self):
-        """Safety net: reset to idle if thinking for too long."""
-        await asyncio.sleep(8.0)
-        if self.state == "thinking":
-            print("⏳ Thinking timeout: ไม่ได้รับการตอบกลับจาก Gemini → idle")
-            self._conversation_active = False
-            await self.update_state("idle")
-            await self.broadcast_to_frontend({
-                "type": "transcript",
-                "text": "การเชื่อมต่อล่าช้า ลองพูดใหม่หรือแตะหน้าจอเพื่อพูดคุยอีกครั้งนะครับ"
-            })
+        """Safety net: reset to idle if thinking for too long or trigger a fallback repeat speech if Gemini remains silent."""
+        try:
+            # Wait for Gemini to signal turn completion (timeout after 8.0 seconds)
+            await asyncio.wait_for(self.gemini_client.turn_complete.wait(), timeout=8.0)
+            
+            # If we are still in thinking state, Gemini finished responding but had nothing to say (no audio)
+            if self.state == "thinking":
+                print("✅ Gemini finished turn silently (no audio). Injecting prompt to ask user to repeat.")
+                if self.gemini_client.is_connected and self.gemini_client.session:
+                    try:
+                        # Mute mic playback to prepare for Gemini speaking
+                        self.audio_handler.muted = True
+                        
+                        # Send system prompt to Gemini Live to say "I didn't hear you, please repeat"
+                        repeat_prompt = (
+                            "[SYSTEM: คุณประมวลผลอินพุตเมื่อสักครู่แล้วเงียบไป "
+                            "กรุณาพูดบอกผู้ใช้เป็นภาษาไทยอย่างสุภาพและเป็นมิตรทันทีว่า "
+                            "'ขอโทษครับ ผมไม่ได้ยินที่คุณพูดเลย รบกวนพูดใหม่อีกรอบได้ไหมครับ']"
+                        )
+                        await self.gemini_client.send_activity_start()
+                        await self.gemini_client.session.send_realtime_input(text=repeat_prompt)
+                        await self.gemini_client.send_activity_end()
+                        
+                        # Wait for the turn completion of the injected repeat prompt (timeout after 5.0 seconds)
+                        try:
+                            await asyncio.wait_for(self.gemini_client.turn_complete.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            print("⏳ Injected repeat prompt turn_complete timeout")
+                        
+                        # If still in thinking state, Gemini remained silent
+                        if self.state == "thinking":
+                            print("🔇 Injected prompt finished silently. Resetting to idle.")
+                            self._conversation_active = False
+                            await self.update_state("idle")
+                    except Exception as e:
+                        print(f"⚠️ Failed to send repeat prompt: {e}")
+                        self._conversation_active = False
+                        await self.update_state("idle")
+                else:
+                    self._conversation_active = False
+                    await self.update_state("idle")
+        except asyncio.TimeoutError:
+            # Actual network timeout or slow response
+            if self.state == "thinking":
+                print("⏳ Thinking timeout: ไม่ได้รับการตอบกลับจาก Gemini → idle")
+                self._conversation_active = False
+                await self.update_state("idle")
+                await self.broadcast_to_frontend({
+                    "type": "transcript",
+                    "text": "การเชื่อมต่อล่าช้า ลองพูดใหม่หรือแตะหน้าจอเพื่อพูดคุยอีกครั้งนะครับ"
+                })
 
     async def _mic_amplitude_broadcast_loop(self):
         """Broadcasts mic amplitude to frontend every 50ms for waveform visualization.
@@ -567,6 +760,9 @@ class StateManager:
         self.camera_handler.start()
         # Disabled background monitor loop to prevent token waste (Option 1)
         # asyncio.create_task(self._camera_monitor_loop())
+
+        # Start smartcard reader service
+        asyncio.create_task(self.smartcard_service.start())
 
         print(f"🚀 Starting Local WebSocket Server on port {PORT}...")
         async with websockets.serve(self._websocket_handler, "0.0.0.0", PORT):
@@ -632,6 +828,15 @@ class StateManager:
                     elif msg_type == "test_speaker":
                         print("🔊 Test speaker requested from UI")
                         self.audio_handler.clear_playback()
+                    elif msg_type == "pause_ai":
+                        print("⏸️ AI pause requested from UI")
+                        self._conversation_active = False
+                        self.audio_handler.muted = True
+                        self.audio_handler.clear_playback()
+                        await self.update_state("sleepy")
+                    elif msg_type == "resume_ai":
+                        print("▶️ AI resume requested from UI")
+                        await self.update_state("idle")
                     elif msg_type == "trigger_telemedicine_manual":
                         print("🩺 Telemedicine requested from UI")
                         self.camera_handler.stop()  # Release camera for Chromium/Jitsi

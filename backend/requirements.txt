@@ -7,3 +7,4 @@ soundfile
 vosk
 anthropic
 pygame
+pyscard

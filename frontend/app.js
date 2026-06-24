@@ -61,9 +61,9 @@ const FACE_STATES = {
   },
   sleepy: {
     irisVar: '--iris-sleepy', glowVar: '--glow-idle',
-    eyelidTop: 58, eyelidBot: 8, pupilScale: 0.7,
-    lookX: 0, lookY: 10, label: 'OFFLINE',
-    headTilt: 0, headNod: 8  // drooping head
+    eyelidTop: 100, eyelidBot: 0, pupilScale: 0.0,
+    lookX: 0, lookY: 0, label: 'SLEEPING',
+    headTilt: 0, headNod: 12  // drooping head more down
   }
 };
 
@@ -285,7 +285,7 @@ class RobotFace {
     this.mouthPath.setAttribute('d', d);
     if (color) {
       this.mouthPath.style.stroke = color;
-      this.mouthPath.style.filter = `drop-shadow(0 0 6px ${glow || color})`;
+      // Removed filter to fix Mali GPU drop-shadow border bug
     }
   }
 
@@ -319,7 +319,7 @@ class RobotFace {
       if (!el) return;
       el.setAttribute('d', i === 0 ? (L[emotion] || L.idle) : (R[emotion] || R.idle));
       el.style.stroke = irisColor;
-      el.style.filter = `drop-shadow(0 0 5px ${glowColor})`;
+      // Removed filter to fix Mali GPU drop-shadow border bug
     });
   }
 
@@ -717,9 +717,68 @@ function showCountdown(seconds, total) {
   statusHint.innerText = `${seconds}s`;
 }
 
+let zzzInterval = null;
+
+function startZzzAnimation() {
+  const container = document.getElementById('sleep-zzz-container');
+  if (!container) return;
+  
+  container.innerHTML = '';
+  if (zzzInterval) clearInterval(zzzInterval);
+  
+  zzzInterval = setInterval(() => {
+    const zzz = document.createElement('div');
+    zzz.className = 'zzz-particle';
+    
+    // Spawn Zzz near the right eye area: X: ~58%-70%, Y: ~38%-46%
+    const randomX = 58 + Math.random() * 12;
+    const randomY = 38 + Math.random() * 8;
+    
+    zzz.style.left = `${randomX}%`;
+    zzz.style.top = `${randomY}%`;
+    
+    const sizes = ['12px', '18px', '24px', '32px'];
+    const size = sizes[Math.floor(Math.random() * sizes.length)];
+    zzz.style.fontSize = size;
+    
+    const texts = ['z', 'Z', 'Zz', 'Zzz'];
+    zzz.innerText = texts[Math.floor(Math.random() * texts.length)];
+    
+    const duration = 3.5 + Math.random() * 1.5;
+    zzz.style.animationDuration = `${duration}s`;
+    
+    container.appendChild(zzz);
+    
+    setTimeout(() => {
+      zzz.remove();
+    }, duration * 1000);
+  }, 1200);
+}
+
+function stopZzzAnimation() {
+  if (zzzInterval) {
+    clearInterval(zzzInterval);
+    zzzInterval = null;
+  }
+  const container = document.getElementById('sleep-zzz-container');
+  if (container) container.innerHTML = '';
+}
+
 function updateState(state) {
-  appContainer.classList.remove('state-listening', 'state-thinking', 'state-speaking');
+  stopZzzAnimation();
+  appContainer.classList.remove('state-listening', 'state-thinking', 'state-speaking', 'state-sleepy');
   if (state !== 'idle') appContainer.classList.add(`state-${state}`);
+
+  const pauseAiBtn = document.getElementById('pause-ai-btn');
+  if (pauseAiBtn) {
+    if (state === 'sleepy') {
+      pauseAiBtn.classList.add('paused');
+      pauseAiBtn.title = "เปิดใช้งาน AI";
+    } else {
+      pauseAiBtn.classList.remove('paused');
+      pauseAiBtn.title = "พักการทำงาน AI";
+    }
+  }
 
   countdownArc.classList.remove('active');
   countdownArc.style.setProperty('--countdown-pct', '0%');
@@ -747,6 +806,12 @@ function updateState(state) {
     statusHint.innerText = 'SPEAKING';
     hideBubble();
     setEmotion('speaking');
+  } else if (state === 'sleepy') {
+    isPttPressed = false;
+    statusHint.innerText = 'PAUSED';
+    setEmotion('sleepy');
+    startZzzAnimation();
+    document.querySelectorAll('.ambient-ring').forEach(el => el.style.transform = '');
   } else {
     isPttPressed = false;
     statusHint.innerText = 'READY';
@@ -778,6 +843,10 @@ function releasePTT() {
 
 function toggleMic() {
   const state = appContainer.className;
+  if (state.includes('state-sleepy')) {
+    // AI is paused/sleepy — do nothing
+    return;
+  }
   if (state.includes('state-thinking')) {
     // In thinking — tap to barge-in (interrupt) by sending ptt_press
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'ptt_press' }));
@@ -837,8 +906,32 @@ if (telemedManualBtn) {
   });
 }
 
+// Pause AI Button
+const pauseAiBtn = document.getElementById('pause-ai-btn');
+if (pauseAiBtn) {
+  pauseAiBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (socket?.readyState === WebSocket.OPEN) {
+      const isPaused = pauseAiBtn.classList.contains('paused');
+      socket.send(JSON.stringify({ type: isPaused ? 'resume_ai' : 'pause_ai' }));
+    }
+  });
+}
+
+
 // ---- Cards ----
 function renderContentCard(data) {
+  if (data.card_type === 'id_card_clear') {
+    const existingCard = cardsList.querySelector('.card-id_card');
+    if (existingCard) {
+      existingCard.remove();
+    }
+    if (cardsList.children.length === 0) {
+      cardsList.innerHTML = '<div class="placeholder-card">ไม่มีการแจ้งเตือนในขณะนี้</div>';
+    }
+    return;
+  }
+
   const placeholder = cardsList.querySelector('.placeholder-card');
   if (placeholder) cardsList.innerHTML = '';
 
@@ -861,10 +954,32 @@ function renderContentCard(data) {
     return;
   }
 
+  if (data.card_type === 'id_card') {
+    const existingCard = cardsList.querySelector('.card-id_card');
+    if (existingCard) {
+      existingCard.remove();
+    }
+  }
+
   const card = document.createElement('div');
   card.className = `dynamic-card card-${data.card_type}`;
+  card.style.position = 'relative';
+
+  if (data.card_type === 'id_card' && data.payload) {
+    try {
+      const payloadObj = JSON.parse(data.payload);
+      if (payloadObj.img) {
+        const imgEl = document.createElement('img');
+        imgEl.src = 'data:image/jpeg;base64,' + payloadObj.img;
+        imgEl.style.cssText = 'width: 75px; height: 95px; border-radius: 8px; float: right; margin-left: 12px; border: 1.5px solid rgba(0, 212, 255, 0.4); object-fit: cover;';
+        card.appendChild(imgEl);
+      }
+    } catch(e) {}
+  }
+
   const h3 = document.createElement('h3'); h3.innerText = data.title;
   const p  = document.createElement('p');  p.innerText  = data.body;
+  p.style.whiteSpace = 'pre-line'; // Ensure line breaks show correctly
   card.appendChild(h3); card.appendChild(p);
   cardsList.insertBefore(card, cardsList.firstChild);
 }

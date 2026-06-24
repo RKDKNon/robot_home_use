@@ -33,6 +33,7 @@ class WakeWordDetector:
         self._rec = None       # Vosk recognizer (set in _run)
         self._model = None     # Vosk model
         self._detected = False  # Guard against double-trigger
+        self._lock = threading.Lock()  # Thread lock for Vosk recognizer safety
 
     def start(self, loop: asyncio.AbstractEventLoop):
         """Start the wake word detection thread."""
@@ -87,36 +88,41 @@ class WakeWordDetector:
         Runs in the sounddevice callback thread (not the asyncio thread).
         Feed audio to Vosk recognizer and check for wake word.
         """
-        if not self._running or not self._rec:
+        if not self._running:
             return
 
-        try:
-            text = ""
-            if self._rec.AcceptWaveform(data_bytes):
-                result = json.loads(self._rec.Result())
-                text = result.get("text", "").lower().strip()
-            else:
-                result = json.loads(self._rec.PartialResult())
-                text = result.get("partial", "").lower().strip()
+        with self._lock:
+            if not self._rec:
+                return
 
-            if text and text != "[unk]" and "jarvis" in text:
-                # Guard against double-trigger from rapid consecutive detections
-                if not self._detected:
-                    self._detected = True
-                    print(f"🔔 Wake word detected: '{text}' → Activating Jarvis!")
-                    asyncio.run_coroutine_threadsafe(
-                        self._on_wake_word_detected(), self.loop
-                    )
-                    # Reset flag after a cooldown to allow re-activation later
-                    threading.Timer(2.0, self._reset_detected).start()
-        except Exception as e:
-            print(f"Wake word processing error: {e}")
+            try:
+                text = ""
+                if self._rec.AcceptWaveform(data_bytes):
+                    result = json.loads(self._rec.Result())
+                    text = result.get("text", "").lower().strip()
+                else:
+                    result = json.loads(self._rec.PartialResult())
+                    text = result.get("partial", "").lower().strip()
+
+                if text and text != "[unk]" and "jarvis" in text:
+                    # Guard against double-trigger from rapid consecutive detections
+                    if not self._detected:
+                        self._detected = True
+                        print(f"🔔 Wake word detected: '{text}' → Activating Jarvis!")
+                        asyncio.run_coroutine_threadsafe(
+                            self._on_wake_word_detected(), self.loop
+                        )
+                        # Reset flag after a cooldown to allow re-activation later
+                        threading.Timer(2.0, self._reset_detected).start()
+            except Exception as e:
+                print(f"Wake word processing error: {e}")
 
     def _reset_detected(self):
         """Reset detection guard after cooldown."""
         self._detected = False
-        if self._rec:
-            self._rec.Reset()
+        with self._lock:
+            if self._rec:
+                self._rec.Reset()
 
     def _run(self):
         """Worker thread: initialize Vosk model and register with AudioHandler."""
@@ -131,11 +137,12 @@ class WakeWordDetector:
             return
 
         try:
-            self._model = Model(model_dir)
-            # Keyword list — Vosk will only transcribe these words (very efficient)
-            keywords = json.dumps(["jarvis", "jarvis jarvis", "[unk]"])
-            self._rec = KaldiRecognizer(self._model, self.SAMPLE_RATE, keywords)
-            self._rec.SetWords(True)
+            with self._lock:
+                self._model = Model(model_dir)
+                # Keyword list — Vosk will only transcribe these words (very efficient)
+                keywords = json.dumps(["jarvis", "jarvis jarvis", "[unk]"])
+                self._rec = KaldiRecognizer(self._model, self.SAMPLE_RATE, keywords)
+                self._rec.SetWords(True)
             print("✅ Vosk wake word ready! Say 'Jarvis' / 'จาวิส' to activate.")
         except Exception as e:
             print(f"❌ Vosk model init failed: {e}")
@@ -153,8 +160,9 @@ class WakeWordDetector:
         finally:
             # Cleanup on exit
             self.audio_handler.unregister_mic_consumer(self._on_mic_audio)
-            self._rec = None
-            self._model = None
+            with self._lock:
+                self._rec = None
+                self._model = None
             print("👂 Wake word detector stopped.")
 
     async def _on_wake_word_detected(self):

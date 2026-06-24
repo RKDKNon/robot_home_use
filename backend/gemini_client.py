@@ -1,6 +1,18 @@
 import asyncio
 import os
 import sys
+
+# Polyfill asyncio.to_thread for Python < 3.9 (like Python 3.8 on Orange Pi Focal)
+if not hasattr(asyncio, "to_thread"):
+    import functools
+    import contextvars
+    async def to_thread(func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+        func_call = functools.partial(ctx.run, func, *args, **kwargs)
+        return await loop.run_in_executor(None, func_call)
+    asyncio.to_thread = to_thread
+
 sys.path.append(os.path.dirname(__file__))
 import db_manager
 from google import genai
@@ -232,6 +244,11 @@ class GeminiClient:
             if not self.connection_task:  # Disconnected intentionally
                 break
 
+            if getattr(self, "_force_reconnect_now", False):
+                self._force_reconnect_now = False
+                print("🔄 Immediate reconnect requested. Skipping delay.")
+                continue
+
             # Exponential backoff: 3s → 6s → 12s → 24s → 48s → 60s (cap)
             consecutive_failures += 1
             retry_delay = min(base_delay * (2 ** (consecutive_failures - 1)), max_delay)
@@ -268,7 +285,8 @@ class GeminiClient:
             "- **ข่าวและเหตุการณ์**: คุยเรื่องกีฬา การเมือง บันเทิง\n"
             "- **ความบันเทิง**: เล่านิทาน บอกมุกตลก เล่าเรื่องผี เกมทายปัญหา\n"
             "- **ดูแลสุขภาพ**: แจ้งเตือนยา ดูค่าวัด ต่อสายหมอ หรือวางสาย/ตัดสายเมื่อคุยเสร็จ (แต่ไม่วินิจฉัยโรคหรือสั่งยา)\n"
-            "- **กล้อง**: มองดูคนไข้หรือสิ่งของเมื่อถูกขอ\n\n"
+            "- **กล้อง**: มองดูคนไข้หรือสิ่งของเมื่อถูกขอ\n"
+            "- **อ่านบัตรประชาชน**: ตัวเครื่องติดตั้งเครื่องอ่านบัตรประชาชนสีดำ คุณสามารถนำข้อมูลของคนไข้มาทักทาย ระบุตัวตน หรือช่วยเหลือเขาได้ทันทีเมื่อเขาเสียบบัตรเข้ามา\n\n"
 
             "## กฎสำคัญ\n"
             "- ตอบเป็นภาษาไทยเสมอ (ห้ามตอบภาษาอังกฤษเด็ดขาด ไม่ว่าในกรณีใดๆ)\n"
@@ -285,6 +303,36 @@ class GeminiClient:
             "- look_at_object: ใช้เมื่อผู้ใช้ยกสิ่งของให้ดูและถามว่าคืออะไร\n"
             "- end_telemedicine: ใช้เมื่อผู้ป่วยพูดให้วางสาย, ตัดสาย หรือยกเลิกการโทร\n"
         )
+
+        # Append active card status dynamically
+        active_card = getattr(self.state_manager, "active_card_data", None)
+        if active_card:
+            name = active_card.get("name_th", "ผู้ป่วย")
+            gender = active_card.get("gender", "ไม่ระบุ")
+            dob = active_card.get("dob", "")
+            age = self.state_manager.calculate_age(dob)
+            age_str = f"{age} ปี" if age is not None else "ไม่ระบุ"
+            birth_date_formatted = self.state_manager.format_thai_date(dob)
+            addr_data = active_card.get("address", {})
+            addr_str = addr_data.get("raw") if isinstance(addr_data, dict) else str(addr_data)
+            cid = active_card.get("cid", "ไม่ระบุ")
+
+            base_instruction += (
+                f"\n## สถานะเครื่องอ่านบัตรประชาชน\n"
+                f"ขณะนี้ผู้ใช้ได้**เสียบบัตรประชาชน**คาไว้ในเครื่องอ่านบัตรแล้ว ข้อมูลของผู้ใช้รายนี้คือ:\n"
+                f"- **ชื่อ-นามสกุล**: {name}\n"
+                f"- **เลขประจำตัวประชาชน (CID)**: {cid}\n"
+                f"- **วันเกิด**: {birth_date_formatted}\n"
+                f"- **อายุ**: {age_str}\n"
+                f"- **เพศ**: {gender}\n"
+                f"- **ที่อยู่**: {addr_str}\n"
+                f"เนื่องจากบัตรประชาชนของเขายังเสียบอยู่ คุณรู้จักตัวตนของเขาแล้ว (คือคุณ {name}) คุณสามารถเรียกชื่อเขา หรือนำข้อมูลส่วนตัวของเขาไปช่วยในการลงทะเบียนคิว รับยา หรือแนะนำการบริการตามที่เขาถามได้อย่างถูกต้องเป็นธรรมชาติ\n\n"
+            )
+        else:
+            base_instruction += (
+                f"\n## สถานะเครื่องอ่านบัตรประชาชน\n"
+                f"ขณะนี้**ไม่มีบัตรประชาชนเสียบอยู่ในเครื่อง** หากผู้ใช้ต้องการใช้บริการหรือคุยแบบระบุตัวตน (เช่น ถามว่าฉันชื่ออะไร หรือให้ลงทะเบียน) ให้คุณแนะนำให้เขาเสียบบัตรประชาชนเข้ากับตัวเครื่องอ่านบัตรประชาชนสีดำที่ติดตั้งอยู่ด้านข้าง\n\n"
+            )
 
         # Load recent conversation history for context restore
         try:
@@ -357,6 +405,18 @@ class GeminiClient:
             if self.receive_task:
                 self.receive_task.cancel()
                 self.receive_task = None
+
+    async def force_reconnect(self):
+        """Forces an immediate reconnection to reload configuration/instructions."""
+        print("🔄 Forcing immediate Gemini Live reconnect...")
+        self._force_reconnect_now = True
+        self.is_connected = False
+        
+        # Wait up to 3 seconds for the connection to re-establish
+        for _ in range(30):
+            if self.is_connected:
+                break
+            await asyncio.sleep(0.1)
 
     async def disconnect(self):
         """Closes the connection and cancels background tasks."""
@@ -528,11 +588,6 @@ class GeminiClient:
                 break
             except Exception as e:
                 err_str = str(e)
-                # WebSocket closed codes (1011=internal error, 1006=abnormal closure)
-                # Break out so _auto_reconnect_loop can establish a fresh session
-                if "1011" in err_str or "1006" in err_str or "abnormal" in err_str.lower():
-                    print(f"🔴 Gemini session dropped ({err_str.split()[0]}). Triggering reconnect...")
-                    self.is_connected = False
-                    break
-                print(f"Error in Gemini receive loop: {e}")
-                await asyncio.sleep(0.5)
+                print(f"🔴 Gemini session error in receive loop: {err_str}. Triggering reconnect...")
+                self.is_connected = False
+                break

@@ -105,10 +105,11 @@ class AudioHandler:
                 channels=self.channels,
                 dtype='int16',
                 blocksize=self.chunk_size,
-                callback=self._input_callback
+                callback=self._input_callback,
+                device=self.input_device
             )
             self.input_stream.start()
-            print("🎙️ Microphone stream started successfully.")
+            print(f"🎙️ Microphone stream started successfully on device {self.input_device}.")
         except Exception as e:
             print(f"⚠️ Could not start microphone stream: {e}. Falling back to silent mock input.")
             self.input_stream = None
